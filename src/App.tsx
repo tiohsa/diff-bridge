@@ -255,6 +255,24 @@ export default function App() {
     );
   };
 
+  const handleExpandAll = () => {
+    if (!session) return;
+    const paths = Array.from(new Set(session.results.map(r => {
+      const parts = (r.relativePath || r.fileName).split('/');
+      const folders = [];
+      for (let i = 0; i < parts.length - 1; i++) {
+        folders.push(parts.slice(0, i + 1).join('/'));
+      }
+      return folders;
+    }).flat()));
+    setExpandedPaths(paths);
+  };
+
+  const handleCollapseAll = () => {
+    setExpandedPaths([]);
+  };
+
+
 
   // Load history & recent sessions on start
   useEffect(() => {
@@ -794,6 +812,17 @@ export default function App() {
                         📋 テーブル表示
                       </button>
                     </div>
+
+                    {viewMode === 'tree' && (
+                      <div style={{ display: 'flex', gap: '0.4rem' }}>
+                        <button className="tree-control-btn expand" onClick={handleExpandAll}>
+                          👐 すべて展開
+                        </button>
+                        <button className="tree-control-btn collapse" onClick={handleCollapseAll}>
+                          🤝 すべて閉じる
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div className="search-box-container">
