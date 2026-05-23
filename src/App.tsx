@@ -12,6 +12,159 @@ import {
 import { CompareSession, DiffFileResult, DiffOptions, FileDiffDetail, SyncHistory, DiffLine } from "./types";
 import "./App.css";
 
+// ==========================================================================
+// Sync Folder Tree structures and helper functions
+// ==========================================================================
+interface TreeNode {
+  type: 'file' | 'folder';
+  name: string;
+  relativePath: string;
+  status: 'same' | 'modified' | 'leftOnly' | 'rightOnly' | 'uncomparable' | 'ambiguous';
+  children?: { [name: string]: TreeNode };
+  fileResult?: DiffFileResult;
+}
+
+interface FlatTreeNode {
+  key: string;
+  name: string;
+  type: 'file' | 'folder';
+  depth: number;
+  relativePath: string;
+  status: 'same' | 'modified' | 'leftOnly' | 'rightOnly' | 'uncomparable' | 'ambiguous';
+  fileResult?: DiffFileResult;
+  hasChildren: boolean;
+}
+
+const buildTreeData = (results: DiffFileResult[]): TreeNode => {
+  const root: TreeNode = {
+    type: 'folder',
+    name: 'root',
+    relativePath: '',
+    status: 'same',
+    children: {}
+  };
+
+  results.forEach(item => {
+    const pathStr = item.relativePath || item.fileName;
+    const parts = pathStr.split('/');
+    let current = root;
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isLast = i === parts.length - 1;
+      const currentRelative = parts.slice(0, i + 1).join('/');
+
+      if (!current.children) current.children = {};
+
+      if (isLast) {
+        current.children[part] = {
+          type: 'file',
+          name: part,
+          relativePath: pathStr,
+          status: item.status,
+          fileResult: item
+        };
+      } else {
+        if (!current.children[part]) {
+          current.children[part] = {
+            type: 'folder',
+            name: part,
+            relativePath: currentRelative,
+            status: 'same',
+            children: {}
+          };
+        }
+        current = current.children[part];
+      }
+    }
+  });
+
+  const propagateStatus = (node: TreeNode): string => {
+    if (node.type === 'file') return node.status;
+
+    let hasModified = false;
+    let hasLeftOnly = false;
+    let hasRightOnly = false;
+    let hasAmbiguous = false;
+
+    if (node.children) {
+      Object.values(node.children).forEach(child => {
+        const childStatus = propagateStatus(child);
+        if (childStatus === 'modified') hasModified = true;
+        if (childStatus === 'leftOnly') hasLeftOnly = true;
+        if (childStatus === 'rightOnly') hasRightOnly = true;
+        if (childStatus === 'ambiguous') hasAmbiguous = true;
+      });
+    }
+
+    if (hasModified) node.status = 'modified';
+    else if (hasLeftOnly && hasRightOnly) node.status = 'modified';
+    else if (hasLeftOnly) node.status = 'leftOnly';
+    else if (hasRightOnly) node.status = 'rightOnly';
+    else if (hasAmbiguous) node.status = 'ambiguous';
+
+    return node.status;
+  };
+
+  propagateStatus(root);
+  return root;
+};
+
+const flattenTree = (
+  node: TreeNode,
+  expandedPaths: string[],
+  depth: number = 0,
+  list: FlatTreeNode[] = []
+): FlatTreeNode[] => {
+  if (node.name === 'root') {
+    if (node.children) {
+      const sortedKeys = Object.keys(node.children).sort((a, b) => {
+        const childA = node.children![a];
+        const childB = node.children![b];
+        if (childA.type !== childB.type) {
+          return childA.type === 'folder' ? -1 : 1;
+        }
+        return a.localeCompare(b);
+      });
+
+      sortedKeys.forEach(key => {
+        flattenTree(node.children![key], expandedPaths, depth, list);
+      });
+    }
+    return list;
+  }
+
+  const hasChildren = node.type === 'folder' && node.children && Object.keys(node.children).length > 0;
+
+  list.push({
+    key: node.relativePath,
+    name: node.name,
+    type: node.type,
+    depth,
+    relativePath: node.relativePath,
+    status: node.status,
+    fileResult: node.fileResult,
+    hasChildren: !!hasChildren
+  });
+
+  if (node.type === 'folder' && expandedPaths.includes(node.relativePath) && node.children) {
+    const sortedKeys = Object.keys(node.children).sort((a, b) => {
+      const childA = node.children![a];
+      const childB = node.children![b];
+      if (childA.type !== childB.type) {
+        return childA.type === 'folder' ? -1 : 1;
+      }
+      return a.localeCompare(b);
+    });
+
+    sortedKeys.forEach(key => {
+      flattenTree(node.children![key], expandedPaths, depth + 1, list);
+    });
+  }
+
+  return list;
+};
+
 const defaultOptions: DiffOptions = {
   matchRule: "relativePath",
   ignoreWhitespace: false,
@@ -43,6 +196,9 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'modified' | 'same' | 'leftOnly' | 'rightOnly' | 'uncomparable'>('all');
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const [viewMode, setViewMode] = useState<'tree' | 'table'>('tree');
+  const [expandedPaths, setExpandedPaths] = useState<string[]>([]);
+
 
   // Detailed Diff State
   const [activeFileResult, setActiveFileResult] = useState<DiffFileResult | null>(null);
@@ -66,6 +222,39 @@ export default function App() {
   const rightPaneRef = useRef<HTMLDivElement>(null);
   const isScrollingLeft = useRef<boolean>(false);
   const isScrollingRight = useRef<boolean>(false);
+
+  // Sync scroll for side-by-side folder tree
+  const leftTreeRef = useRef<HTMLDivElement>(null);
+  const rightTreeRef = useRef<HTMLDivElement>(null);
+  const isScrollingTreeLeft = useRef<boolean>(false);
+  const isScrollingTreeRight = useRef<boolean>(false);
+
+  const handleLeftTreeScroll = () => {
+    if (isScrollingTreeRight.current) return;
+    isScrollingTreeLeft.current = true;
+    if (leftTreeRef.current && rightTreeRef.current) {
+      rightTreeRef.current.scrollTop = leftTreeRef.current.scrollTop;
+      rightTreeRef.current.scrollLeft = leftTreeRef.current.scrollLeft;
+    }
+    setTimeout(() => { isScrollingTreeLeft.current = false; }, 50);
+  };
+
+  const handleRightTreeScroll = () => {
+    if (isScrollingTreeLeft.current) return;
+    isScrollingTreeRight.current = true;
+    if (leftTreeRef.current && rightTreeRef.current) {
+      leftTreeRef.current.scrollTop = rightTreeRef.current.scrollTop;
+      leftTreeRef.current.scrollLeft = rightTreeRef.current.scrollLeft;
+    }
+    setTimeout(() => { isScrollingTreeRight.current = false; }, 50);
+  };
+
+  const togglePath = (path: string) => {
+    setExpandedPaths(prev =>
+      prev.includes(path) ? prev.filter(p => p !== path) : [...prev, path]
+    );
+  };
+
 
   // Load history & recent sessions on start
   useEffect(() => {
@@ -162,7 +351,18 @@ export default function App() {
     try {
       const res = await compareDirectories(leftRoot, rightRoot, options);
       setSession(res);
-      
+
+      // フォルダ構造の自動全展開パスを収集して初期設定
+      const pathsToExpand = Array.from(new Set(res.results.map(r => {
+        const parts = (r.relativePath || r.fileName).split('/');
+        const folders = [];
+        for (let i = 0; i < parts.length - 1; i++) {
+          folders.push(parts.slice(0, i + 1).join('/'));
+        }
+        return folders;
+      }).flat()));
+      setExpandedPaths(pathsToExpand);
+
       // 最近使ったセッションに追加
       const updatedSessions = [res, ...recentSessions.filter(s => s.leftRoot !== leftRoot || s.rightRoot !== rightRoot)].slice(0, 5);
       setRecentSessions(updatedSessions);
@@ -567,22 +767,33 @@ export default function App() {
             {session && !loading && (
               <div>
                 <div className="results-header">
-                  <div className="filter-tabs">
-                    <button className={`filter-tab ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
-                      すべて ({session.results.length})
-                    </button>
-                    <button className={`filter-tab ${filter === 'modified' ? 'active' : ''}`} onClick={() => setFilter('modified')}>
-                      変更あり ({session.results.filter(x => x.status === 'modified').length})
-                    </button>
-                    <button className={`filter-tab ${filter === 'leftOnly' ? 'active' : ''}`} onClick={() => setFilter('leftOnly')}>
-                      左のみ ({session.results.filter(x => x.status === 'leftOnly').length})
-                    </button>
-                    <button className={`filter-tab ${filter === 'rightOnly' ? 'active' : ''}`} onClick={() => setFilter('rightOnly')}>
-                      右のみ ({session.results.filter(x => x.status === 'rightOnly').length})
-                    </button>
-                    <button className={`filter-tab ${filter === 'same' ? 'active' : ''}`} onClick={() => setFilter('same')}>
-                      同一 ({session.results.filter(x => x.status === 'same').length})
-                    </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                    <div className="filter-tabs">
+                      <button className={`filter-tab ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
+                        すべて ({session.results.length})
+                      </button>
+                      <button className={`filter-tab ${filter === 'modified' ? 'active' : ''}`} onClick={() => setFilter('modified')}>
+                        変更あり ({session.results.filter(x => x.status === 'modified').length})
+                      </button>
+                      <button className={`filter-tab ${filter === 'leftOnly' ? 'active' : ''}`} onClick={() => setFilter('leftOnly')}>
+                        左のみ ({session.results.filter(x => x.status === 'leftOnly').length})
+                      </button>
+                      <button className={`filter-tab ${filter === 'rightOnly' ? 'active' : ''}`} onClick={() => setFilter('rightOnly')}>
+                        右のみ ({session.results.filter(x => x.status === 'rightOnly').length})
+                      </button>
+                      <button className={`filter-tab ${filter === 'same' ? 'active' : ''}`} onClick={() => setFilter('same')}>
+                        同一 ({session.results.filter(x => x.status === 'same').length})
+                      </button>
+                    </div>
+
+                    <div className="view-switch-tabs">
+                      <button className={`view-switch-tab ${viewMode === 'tree' ? 'active' : ''}`} onClick={() => setViewMode('tree')}>
+                        🌲 ツリー表示
+                      </button>
+                      <button className={`view-switch-tab ${viewMode === 'table' ? 'active' : ''}`} onClick={() => setViewMode('table')}>
+                        📋 テーブル表示
+                      </button>
+                    </div>
                   </div>
 
                   <div className="search-box-container">
@@ -602,6 +813,115 @@ export default function App() {
                     <div className="empty-state-icon">📂</div>
                     <p>該当するファイルはありません。</p>
                   </div>
+                ) : viewMode === 'tree' ? (
+                  (() => {
+                    const treeData = buildTreeData(filteredResults);
+                    const flatNodes = flattenTree(treeData, expandedPaths);
+
+                    return (
+                      <div className="tree-view-container">
+                        {/* Left Tree */}
+                        <div className="tree-pane" ref={leftTreeRef} onScroll={handleLeftTreeScroll}>
+                          <h4>左側: {session.leftRoot?.split(/[/\\]/).pop() || "左フォルダ"}</h4>
+                          {flatNodes.length === 0 ? (
+                            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>フォルダが空か、対象ファイルがありません。</p>
+                          ) : (
+                            flatNodes.map(node => {
+                              const isRightOnly = node.status === 'rightOnly';
+                              const statusClass = `tree-status-${node.status}`;
+                              
+                              return (
+                                <div 
+                                  key={`left-${node.key}`} 
+                                  className={`tree-item ${node.type === 'folder' ? 'tree-item-folder' : 'tree-item-file'} ${statusClass}`}
+                                  style={{ paddingLeft: `${node.depth * 1.2 + 0.6}rem`, opacity: isRightOnly ? 0.35 : 1 }}
+                                  onClick={() => {
+                                    if (node.type === 'folder') {
+                                      togglePath(node.relativePath);
+                                    } else if (!isRightOnly && node.fileResult) {
+                                      handleShowFileDiff(node.fileResult);
+                                    }
+                                  }}
+                                >
+                                  {node.type === 'folder' ? (
+                                    <>
+                                      <span className="tree-toggle-icon">
+                                        {expandedPaths.includes(node.relativePath) ? "▼" : "▶"}
+                                      </span>
+                                      <span>{expandedPaths.includes(node.relativePath) ? "📂" : "📁"}</span>
+                                    </>
+                                  ) : (
+                                    <span>📄</span>
+                                  )}
+                                  <span className="tree-item-name">{node.name}</span>
+                                  {node.type === 'file' && (
+                                    <span className="tree-item-badge">
+                                      {node.status === 'same' && ""}
+                                      {node.status === 'modified' && "変更"}
+                                      {node.status === 'leftOnly' && "新規(L)"}
+                                      {node.status === 'rightOnly' && "欠落"}
+                                      {node.status === 'uncomparable' && "対象外"}
+                                      {node.status === 'ambiguous' && "重複"}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+
+                        {/* Right Tree */}
+                        <div className="tree-pane" ref={rightTreeRef} onScroll={handleRightTreeScroll}>
+                          <h4>右側: {session.rightRoot?.split(/[/\\]/).pop() || "右フォルダ"}</h4>
+                          {flatNodes.length === 0 ? (
+                            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>フォルダが空か、対象ファイルがありません。</p>
+                          ) : (
+                            flatNodes.map(node => {
+                              const isLeftOnly = node.status === 'leftOnly';
+                              const statusClass = `tree-status-${node.status}`;
+                              
+                              return (
+                                <div 
+                                  key={`right-${node.key}`} 
+                                  className={`tree-item ${node.type === 'folder' ? 'tree-item-folder' : 'tree-item-file'} ${statusClass}`}
+                                  style={{ paddingLeft: `${node.depth * 1.2 + 0.6}rem`, opacity: isLeftOnly ? 0.35 : 1 }}
+                                  onClick={() => {
+                                    if (node.type === 'folder') {
+                                      togglePath(node.relativePath);
+                                    } else if (!isLeftOnly && node.fileResult) {
+                                      handleShowFileDiff(node.fileResult);
+                                    }
+                                  }}
+                                >
+                                  {node.type === 'folder' ? (
+                                    <>
+                                      <span className="tree-toggle-icon">
+                                        {expandedPaths.includes(node.relativePath) ? "▼" : "▶"}
+                                      </span>
+                                      <span>{expandedPaths.includes(node.relativePath) ? "📂" : "📁"}</span>
+                                    </>
+                                  ) : (
+                                    <span>📄</span>
+                                  )}
+                                  <span className="tree-item-name">{node.name}</span>
+                                  {node.type === 'file' && (
+                                    <span className="tree-item-badge">
+                                      {node.status === 'same' && ""}
+                                      {node.status === 'modified' && "変更"}
+                                      {node.status === 'leftOnly' && "欠落"}
+                                      {node.status === 'rightOnly' && "新規(R)"}
+                                      {node.status === 'uncomparable' && "対象外"}
+                                      {node.status === 'ambiguous' && "重複"}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()
                 ) : (
                   <div className="table-wrapper">
                     <table className="results-table">
