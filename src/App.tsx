@@ -180,7 +180,7 @@ const defaultOptions: DiffOptions = {
 
 export default function App() {
   // Navigation State
-  const [view, setView] = useState<'home' | 'bulk-diff' | 'specified-diff' | 'diff-detail' | 'history' | 'settings'>('home');
+  const [view, setView] = useState<'home' | 'bulk-diff' | 'specified-diff' | 'history' | 'settings'>('home');
 
   // Comparison State
   const [leftRoot, setLeftRoot] = useState<string>("");
@@ -418,7 +418,6 @@ export default function App() {
 
       setActiveFileResult(fakeResult);
       setActiveDiffDetail(detail);
-      setView('diff-detail');
     } catch (e: any) {
       setErrorMsg(e.toString());
     } finally {
@@ -445,7 +444,6 @@ export default function App() {
       const detail = await compareFiles(realLeft, realRight, options);
       setActiveFileResult(fileResult);
       setActiveDiffDetail(detail);
-      setView('diff-detail');
     } catch (e: any) {
       setErrorMsg(e.toString());
     }
@@ -491,14 +489,14 @@ export default function App() {
       setShowSyncConfirm(false);
       alert("同期処理が完了しました。履歴にGitコミットとして保存されました。");
       
+      // 詳細ダイアログを閉じる
+      setActiveFileResult(null);
+      setActiveDiffDetail(null);
+      
       // 同期完了後のリフレッシュ
       if (session && session.leftRoot && session.rightRoot) {
         // 一括diffモードなら再度比較を走らせてリスト更新
         await handleCompareDirs();
-        setView('bulk-diff');
-      } else {
-        // 指定diffモードならホームへ
-        setView('home');
       }
       loadHistories();
     } catch (e: any) {
@@ -586,7 +584,7 @@ export default function App() {
           <button className={`nav-button ${view === 'home' ? 'active' : ''}`} onClick={() => setView('home')}>
             ホーム
           </button>
-          <button className={`nav-button ${view === 'bulk-diff' || (view === 'diff-detail' && session?.mode === 'bulk') ? 'active' : ''}`} onClick={() => { if(session) { setView('bulk-diff') } else { setView('home') } }}>
+          <button className={`nav-button ${view === 'bulk-diff' ? 'active' : ''}`} onClick={() => { if(session) { setView('bulk-diff') } else { setView('home') } }}>
             一括比較
           </button>
           <button className={`nav-button ${view === 'history' ? 'active' : ''}`} onClick={() => { loadHistories(); setView('history'); }}>
@@ -1085,113 +1083,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== DIFF DETAIL VIEW (2 PANE) ==================== */}
-        {view === 'diff-detail' && activeFileResult && activeDiffDetail && (
-          <div className="detail-layout">
-            <div className="detail-actions-bar">
-              <div className="detail-path-title">
-                <span>比較ファイル: {activeFileResult.fileName}</span>
-                <h3>
-                  {activeFileResult.relativePath || activeFileResult.fileName}
-                </h3>
-              </div>
 
-              <div className="sync-action-buttons">
-                {/* 左から右への同期 */}
-                {activeFileResult.status !== 'same' && (
-                  <button 
-                    className="btn btn-primary"
-                    onClick={() => {
-                      setSyncDirection("leftToRight");
-                      setShowSyncConfirm(true);
-                    }}
-                  >
-                    ◀ 左の内容を右へ適用 (同期)
-                  </button>
-                )}
-
-                {/* 右から左への同期 */}
-                {activeFileResult.status !== 'same' && (
-                  <button 
-                    className="btn btn-secondary"
-                    onClick={() => {
-                      setSyncDirection("rightToLeft");
-                      setShowSyncConfirm(true);
-                    }}
-                  >
-                    右の内容を左へ適用 (同期) ▶
-                  </button>
-                )}
-
-                <button className="btn btn-secondary" onClick={() => {
-                  if (session) {
-                    setView('bulk-diff');
-                  } else {
-                    setView('home');
-                  }
-                }}>
-                  戻る
-                </button>
-              </div>
-            </div>
-
-            {/* Side-by-side synchronized scrolling viewer */}
-            <div className="two-pane-container">
-              {/* Left Pane (A) */}
-              <div className="pane" ref={leftPaneRef} onScroll={handleLeftScroll}>
-                <div className="pane-header">
-                  <span>左側ファイル</span>
-                  <span>{activeDiffDetail.leftPath}</span>
-                </div>
-                <div className="pane-code-area">
-                  {activeDiffDetail.lines.map((line, idx) => {
-                    const isRightOnly = line.leftLineNo === null;
-                    if (isRightOnly) {
-                      return <div key={idx} className="code-line empty-stub"><div className="line-number">-</div><div className="line-content"></div></div>;
-                    }
-
-                    // CSS クラス判定
-                    let lineClass = "equal";
-                    if (line.tag === "delete" || line.tag === "modify-delete") lineClass = "delete";
-
-                    return (
-                      <div key={idx} className={`code-line ${lineClass}`}>
-                        <div className="line-number">{line.leftLineNo}</div>
-                        <div className="line-content">{renderLineContentWithInline(line)}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Right Pane (B) */}
-              <div className="pane" ref={rightPaneRef} onScroll={handleRightScroll}>
-                <div className="pane-header">
-                  <span>右側ファイル</span>
-                  <span>{activeDiffDetail.rightPath}</span>
-                </div>
-                <div className="pane-code-area">
-                  {activeDiffDetail.lines.map((line, idx) => {
-                    const isLeftOnly = line.rightLineNo === null;
-                    if (isLeftOnly) {
-                      return <div key={idx} className="code-line empty-stub"><div className="line-number">-</div><div className="line-content"></div></div>;
-                    }
-
-                    let lineClass = "equal";
-                    if (line.tag === "insert" || line.tag === "modify-insert") lineClass = "insert";
-
-                    return (
-                      <div key={idx} className={`code-line ${lineClass}`}>
-                        <div className="line-number">{line.rightLineNo}</div>
-                        <div className="line-content">{renderLineContentWithInline(line)}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* ==================== HISTORY VIEW ==================== */}
         {view === 'history' && (
@@ -1314,6 +1206,128 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* ==================== DIFF DETAIL DIALOG ==================== */}
+      {activeFileResult && activeDiffDetail && (
+        <div className="modal-overlay modal-diff-overlay">
+          <div className="modal-content modal-diff-detail">
+            <div className="modal-header">
+              <div className="detail-path-title">
+                <span>比較ファイル: {activeFileResult.fileName}</span>
+                <h3>{activeFileResult.relativePath || activeFileResult.fileName}</h3>
+              </div>
+              <button 
+                className="btn btn-secondary btn-icon" 
+                onClick={() => {
+                  setActiveFileResult(null);
+                  setActiveDiffDetail(null);
+                }}
+                style={{ fontSize: '1.2rem', padding: '0.2rem 0.6rem' }}
+                title="閉じる"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="modal-body">
+              <div className="detail-actions-bar" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--glass-border)', padding: '0.8rem 1.2rem', borderRadius: '0.6rem' }}>
+                <div className="sync-action-buttons" style={{ display: 'flex', width: '100%', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.8rem' }}>
+                  <div style={{ display: 'flex', gap: '0.8rem' }}>
+                    {/* 左から右への同期 */}
+                    {activeFileResult.status !== 'same' && (
+                      <button 
+                        className="btn btn-primary"
+                        onClick={() => {
+                          setSyncDirection("leftToRight");
+                          setShowSyncConfirm(true);
+                        }}
+                      >
+                        ◀ 左の内容を右へ適用 (同期)
+                      </button>
+                    )}
+
+                    {/* 右から左への同期 */}
+                    {activeFileResult.status !== 'same' && (
+                      <button 
+                        className="btn btn-secondary"
+                        onClick={() => {
+                          setSyncDirection("rightToLeft");
+                          setShowSyncConfirm(true);
+                        }}
+                      >
+                        右の内容を左へ適用 (同期) ▶
+                      </button>
+                    )}
+                  </div>
+
+                  <button className="btn btn-secondary" onClick={() => {
+                    setActiveFileResult(null);
+                    setActiveDiffDetail(null);
+                  }}>
+                    閉じる
+                  </button>
+                </div>
+              </div>
+
+              {/* Side-by-side synchronized scrolling viewer */}
+              <div className="two-pane-container">
+                {/* Left Pane (A) */}
+                <div className="pane" ref={leftPaneRef} onScroll={handleLeftScroll}>
+                  <div className="pane-header">
+                    <span>左側ファイル</span>
+                    <span>{activeDiffDetail.leftPath}</span>
+                  </div>
+                  <div className="pane-code-area">
+                    {activeDiffDetail.lines.map((line, idx) => {
+                      const isRightOnly = line.leftLineNo === null;
+                      if (isRightOnly) {
+                        return <div key={idx} className="code-line empty-stub"><div className="line-number">-</div><div className="line-content"></div></div>;
+                      }
+
+                      // CSS クラス判定
+                      let lineClass = "equal";
+                      if (line.tag === "delete" || line.tag === "modify-delete") lineClass = "delete";
+
+                      return (
+                        <div key={idx} className={`code-line ${lineClass}`}>
+                          <div className="line-number">{line.leftLineNo}</div>
+                          <div className="line-content">{renderLineContentWithInline(line)}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Right Pane (B) */}
+                <div className="pane" ref={rightPaneRef} onScroll={handleRightScroll}>
+                  <div className="pane-header">
+                    <span>右側ファイル</span>
+                    <span>{activeDiffDetail.rightPath}</span>
+                  </div>
+                  <div className="pane-code-area">
+                    {activeDiffDetail.lines.map((line, idx) => {
+                      const isLeftOnly = line.rightLineNo === null;
+                      if (isLeftOnly) {
+                        return <div key={idx} className="code-line empty-stub"><div className="line-number">-</div><div className="line-content"></div></div>;
+                      }
+
+                      let lineClass = "equal";
+                      if (line.tag === "insert" || line.tag === "modify-insert") lineClass = "insert";
+
+                      return (
+                        <div key={idx} className={`code-line ${lineClass}`}>
+                          <div className="line-number">{line.rightLineNo}</div>
+                          <div className="line-content">{renderLineContentWithInline(line)}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ==================== SYNC CONFIRMATION DIALOG ==================== */}
       {showSyncConfirm && activeFileResult && syncDirection && (

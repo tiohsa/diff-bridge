@@ -1366,4 +1366,56 @@ h1, h2, h3, h4 {
   transform: translateY(-1px);
 }
 
+/* ==========================================================================
+   Large Diff Comparison Modal Styling
+   ========================================================================== */
+.modal-diff-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(5, 7, 12, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  animation: fadeIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.modal-diff-detail {
+  background: var(--bg-secondary);
+  border: 1px solid var(--glass-border);
+  border-radius: 1.2rem;
+  width: 96vw;
+  max-width: 1600px;
+  height: 90vh;
+  max-height: 95vh;
+  box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.8);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: modalScaleUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.modal-diff-detail .modal-body {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  padding: 1.5rem 2rem;
+}
+
+.modal-diff-detail .two-pane-container {
+  flex: 1;
+  height: 0;
+  min-height: 0;
+  margin-bottom: 0;
+}
+
+
 
