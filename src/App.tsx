@@ -577,7 +577,7 @@ export default function App() {
       {/* Premium Navigation Header */}
       <header className="app-header">
         <div className="logo-section" onClick={() => setView('home')}>
-          <div className="logo-icon">⇄</div>
+          <div className="logo-icon">✦</div>
           <div className="logo-text">diff-bridge</div>
         </div>
         <nav className="nav-links">
