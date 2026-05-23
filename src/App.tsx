@@ -214,6 +214,9 @@ export default function App() {
   const [histories, setHistories] = useState<SyncHistory[]>([]);
   const [historyLoading, setHistoryLoading] = useState<boolean>(false);
 
+  // Specific file history modal state
+  const [historyFileResult, setHistoryFileResult] = useState<DiffFileResult | null>(null);
+
   // Recent Sessions (Session storage simulation)
   const [recentSessions, setRecentSessions] = useState<CompareSession[]>([]);
 
@@ -515,6 +518,58 @@ export default function App() {
       await restoreSync(historyId);
       alert("復元に成功しました。復元操作も履歴に保存されました。");
       loadHistories();
+    } catch (e: any) {
+      setErrorMsg(e.toString());
+      alert(`復元エラー: ${e.toString()}`);
+    }
+  };
+
+  // 特定のファイルに関連する同期履歴を抽出する
+  const getFileHistories = (fileResult: DiffFileResult) => {
+    const normalize = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+    return histories.filter(h => {
+      const hSource = normalize(h.sourcePath);
+      const hTarget = normalize(h.targetPath);
+      const fLeft = fileResult.leftPath ? normalize(fileResult.leftPath) : '';
+      const fRight = fileResult.rightPath ? normalize(fileResult.rightPath) : '';
+      
+      // 絶対パス完全一致
+      const matchAbsolute = (fLeft && (hSource === fLeft || hTarget === fLeft)) ||
+                            (fRight && (hSource === fRight || hTarget === fRight));
+                            
+      // 相対パス一致（末尾が相対パス）
+      const matchRelative = fileResult.relativePath && (
+        hSource.endsWith(normalize(fileResult.relativePath)) ||
+        hTarget.endsWith(normalize(fileResult.relativePath))
+      );
+      
+      // ファイル名一致
+      const matchFileName = !fileResult.relativePath && (
+        normalize(h.targetPath).endsWith('/' + normalize(fileResult.fileName)) ||
+        normalize(h.sourcePath).endsWith('/' + normalize(fileResult.fileName))
+      );
+      
+      return matchAbsolute || matchRelative || matchFileName;
+    });
+  };
+
+  // 特定ファイル用の復元ハンドラー
+  const handleRestoreFileHistory = async (historyId: string) => {
+    if (!confirm("本当にこのファイルの同期操作を元に戻しますか？")) return;
+    setErrorMsg(null);
+    try {
+      await restoreSync(historyId);
+      alert("復元に成功しました。復元操作も履歴に保存されました。");
+      
+      // 履歴をリロード
+      await loadHistories();
+      
+      // 現在開いている比較結果を自動で再スキャン・リフレッシュ
+      if (session && session.leftRoot && session.rightRoot) {
+        await handleCompareDirs();
+      } else if (leftFile && rightFile) {
+        await handleCompareFiles();
+      }
     } catch (e: any) {
       setErrorMsg(e.toString());
       alert(`復元エラー: ${e.toString()}`);
@@ -882,14 +937,28 @@ export default function App() {
                                   )}
                                   <span className="tree-item-name">{node.name}</span>
                                   {node.type === 'file' && (
-                                    <span className="tree-item-badge">
-                                      {node.status === 'same' && ""}
-                                      {node.status === 'modified' && "変更"}
-                                      {node.status === 'leftOnly' && "新規(L)"}
-                                      {node.status === 'rightOnly' && "欠落"}
-                                      {node.status === 'uncomparable' && "対象外"}
-                                      {node.status === 'ambiguous' && "重複"}
-                                    </span>
+                                    <>
+                                      {node.fileResult && (
+                                        <button 
+                                          className="tree-item-history-btn"
+                                          title="このファイルの同期履歴を表示"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setHistoryFileResult(node.fileResult!);
+                                          }}
+                                        >
+                                          ⏱️
+                                        </button>
+                                      )}
+                                      <span className="tree-item-badge">
+                                        {node.status === 'same' && ""}
+                                        {node.status === 'modified' && "変更"}
+                                        {node.status === 'leftOnly' && "新規(L)"}
+                                        {node.status === 'rightOnly' && "欠落"}
+                                        {node.status === 'uncomparable' && "対象外"}
+                                        {node.status === 'ambiguous' && "重複"}
+                                      </span>
+                                    </>
                                   )}
                                 </div>
                               );
@@ -932,14 +1001,28 @@ export default function App() {
                                   )}
                                   <span className="tree-item-name">{node.name}</span>
                                   {node.type === 'file' && (
-                                    <span className="tree-item-badge">
-                                      {node.status === 'same' && ""}
-                                      {node.status === 'modified' && "変更"}
-                                      {node.status === 'leftOnly' && "欠落"}
-                                      {node.status === 'rightOnly' && "新規(R)"}
-                                      {node.status === 'uncomparable' && "対象外"}
-                                      {node.status === 'ambiguous' && "重複"}
-                                    </span>
+                                    <>
+                                      {node.fileResult && (
+                                        <button 
+                                          className="tree-item-history-btn"
+                                          title="このファイルの同期履歴を表示"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setHistoryFileResult(node.fileResult!);
+                                          }}
+                                        >
+                                          ⏱️
+                                        </button>
+                                      )}
+                                      <span className="tree-item-badge">
+                                        {node.status === 'same' && ""}
+                                        {node.status === 'modified' && "変更"}
+                                        {node.status === 'leftOnly' && "欠落"}
+                                        {node.status === 'rightOnly' && "新規(R)"}
+                                        {node.status === 'uncomparable' && "対象外"}
+                                        {node.status === 'ambiguous' && "重複"}
+                                      </span>
+                                    </>
                                   )}
                                 </div>
                               );
@@ -971,12 +1054,26 @@ export default function App() {
                               </div>
                             </td>
                             <td>
-                              {item.status === 'same' && <span className="badge badge-same">同一</span>}
-                              {item.status === 'modified' && <span className="badge badge-modified">変更あり</span>}
-                              {item.status === 'leftOnly' && <span className="badge badge-left-only">左のみ</span>}
-                              {item.status === 'rightOnly' && <span className="badge badge-right-only">右のみ</span>}
-                              {item.status === 'uncomparable' && <span className="badge badge-uncomparable">比較不可</span>}
-                              {item.status === 'ambiguous' && <span className="badge badge-ambiguous">重複曖昧</span>}
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem' }}>
+                                <div>
+                                  {item.status === 'same' && <span className="badge badge-same">同一</span>}
+                                  {item.status === 'modified' && <span className="badge badge-modified">変更あり</span>}
+                                  {item.status === 'leftOnly' && <span className="badge badge-left-only">左のみ</span>}
+                                  {item.status === 'rightOnly' && <span className="badge badge-right-only">右のみ</span>}
+                                  {item.status === 'uncomparable' && <span className="badge badge-uncomparable">比較不可</span>}
+                                  {item.status === 'ambiguous' && <span className="badge badge-ambiguous">重複曖昧</span>}
+                                </div>
+                                <button 
+                                  className="table-item-history-btn"
+                                  title="このファイルの同期履歴を表示"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setHistoryFileResult(item);
+                                  }}
+                                >
+                                  ⏱️ 履歴
+                                </button>
+                              </div>
                             </td>
                             <td>
                               {item.status === 'modified' && (
@@ -1379,6 +1476,112 @@ export default function App() {
               </button>
               <button className="btn btn-primary" onClick={handleExecuteSync} disabled={syncing}>
                 {syncing ? "同期を実行中..." : "確認して同期を実行"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== FILE HISTORY MODAL ==================== */}
+      {historyFileResult && (
+        <div className="modal-overlay">
+          <div className="modal-content modal-history-detail" style={{ maxWidth: '750px' }}>
+            <div className="modal-header">
+              <div className="detail-path-title">
+                <span>ファイル履歴</span>
+                <h3>⏱️ {historyFileResult.fileName} の同期履歴</h3>
+              </div>
+              <button 
+                className="btn btn-secondary btn-icon" 
+                onClick={() => setHistoryFileResult(null)}
+                style={{ fontSize: '1.2rem', padding: '0.2rem 0.6rem' }}
+                title="閉じる"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-body)', marginBottom: '1.2rem', padding: '0.8rem 1rem', background: 'var(--color-surface-soft)', border: '1px solid var(--color-hairline)', borderRadius: 'var(--radius-md)' }}>
+                {historyFileResult.relativePath && (
+                  <div style={{ marginBottom: '0.3rem' }}><strong>相対パス:</strong> <span style={{ fontFamily: 'var(--font-mono)' }}>{historyFileResult.relativePath}</span></div>
+                )}
+                {historyFileResult.leftPath && (
+                  <div style={{ marginBottom: '0.3rem' }}><strong>左側絶対パス:</strong> <span style={{ fontFamily: 'var(--font-mono)' }}>{historyFileResult.leftPath}</span></div>
+                )}
+                {historyFileResult.rightPath && (
+                  <div><strong>右側絶対パス:</strong> <span style={{ fontFamily: 'var(--font-mono)' }}>{historyFileResult.rightPath}</span></div>
+                )}
+              </div>
+
+              {(() => {
+                const fileHistories = getFileHistories(historyFileResult);
+                if (fileHistories.length === 0) {
+                  return (
+                    <div className="empty-state" style={{ padding: '2rem 1rem' }}>
+                      <div className="empty-state-icon" style={{ fontSize: '2rem' }}>⏱️</div>
+                      <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                        このファイルの同期履歴はまだ存在しません。
+                      </p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="history-timeline" style={{ marginTop: '0.5rem' }}>
+                    {fileHistories.map((h) => (
+                      <div key={h.id} className={`history-node ${h.status}`} style={{ padding: '1rem', border: '1px solid var(--color-hairline)', borderRadius: 'var(--radius-md)', marginBottom: '1rem', background: 'var(--color-canvas)' }}>
+                        <div className="history-node-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                          <div className="history-meta-top" style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                            <span className="history-action-text" style={{ fontWeight: '600', fontSize: '0.88rem' }}>
+                              {h.status === "restored" ? "↩️ 復元操作" : "⇄ 同期適用"}
+                            </span>
+                            <span className="history-time" style={{ fontSize: '0.8rem', color: 'var(--color-muted)' }}>
+                              {new Date(h.createdAt).toLocaleString("ja-JP")}
+                            </span>
+                          </div>
+                          
+                          {h.status === "success" && (
+                            <button 
+                              className="btn btn-secondary btn-danger" 
+                              style={{ padding: '0.3rem 0.6rem', fontSize: '0.78rem' }}
+                              onClick={() => handleRestoreFileHistory(h.id)}
+                            >
+                              ↩️ この時点に復元
+                            </button>
+                          )}
+
+                          {h.status === "restored" && (
+                            <span className="badge badge-same" style={{ background: 'rgba(139, 92, 246, 0.15)', color: '#7c3aed', padding: '0.15rem 0.4rem', fontSize: '0.7rem' }}>
+                              復元済み
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="history-node-body" style={{ fontSize: '0.85rem', color: 'var(--color-body)', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                          <div>
+                            <strong>方向:</strong> {h.direction === "leftToRight" ? "左 ➔ 右 (適用)" : "右 ➔ 左 (適用)"}
+                          </div>
+                          <div style={{ wordBreak: 'break-all' }}>
+                            <strong>同期元:</strong> <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>{h.sourcePath}</span>
+                          </div>
+                          <div style={{ wordBreak: 'break-all' }}>
+                            <strong>同期先:</strong> <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>{h.targetPath}</span>
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--color-muted)', marginTop: '0.2rem', background: 'var(--color-surface-soft)', padding: '0.2rem 0.4rem', borderRadius: '4px', width: 'fit-content' }}>
+                            Commit ID: {h.commitId.substring(0, 10)}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setHistoryFileResult(null)}>
+                閉じる
               </button>
             </div>
           </div>

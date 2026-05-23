@@ -1433,3 +1433,67 @@ h1, h2, h3, h4 {
   min-height: 0;
   margin-bottom: 0;
 }
+
+/* ==========================================================================
+   File Sync History & Restoration Button Styles
+   ========================================================================== */
+
+/* Tree view history button */
+.tree-item-history-btn {
+  background: transparent;
+  border: none;
+  font-size: 0.82rem;
+  cursor: pointer;
+  opacity: 0.25;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  padding: 0 4px;
+  margin-left: auto; /* Push it to the right, before the badge */
+  margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  line-height: 1;
+}
+
+.tree-item:hover .tree-item-history-btn {
+  opacity: 0.75;
+}
+
+.tree-item-history-btn:hover {
+  opacity: 1 !important;
+  transform: scale(1.2);
+  background-color: var(--color-surface-cream-strong);
+}
+
+/* Table view history button */
+.table-item-history-btn {
+  background-color: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+  color: var(--color-muted);
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  transition: all 0.15s ease;
+}
+
+.table-item-history-btn:hover {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+/* Specific file history modal overrides */
+.modal-history-detail {
+  max-height: 85vh;
+  box-shadow: 0 20px 50px rgba(20, 20, 19, 0.15);
+}
+
+.modal-history-detail .modal-body {
+  padding: 1.5rem;
+}
