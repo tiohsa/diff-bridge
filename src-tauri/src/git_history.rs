@@ -1,7 +1,7 @@
 use crate::models::SyncHistory;
 use chrono::Utc;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use sha2::{Digest, Sha256};

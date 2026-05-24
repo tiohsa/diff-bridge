@@ -1,4 +1,4 @@
-use crate::models::{CompareSession, DiffFileResult, DiffOptions, FileDiffDetail, SyncHistory};
+use crate::models::{CompareSession, DiffOptions, FileDiffDetail, SyncHistory};
 use crate::diff_engine::DiffEngine;
 use crate::git_history::GitHistoryManager;
 use crate::AppState;

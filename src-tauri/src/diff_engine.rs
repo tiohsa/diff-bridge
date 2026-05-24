@@ -87,7 +87,7 @@ impl DiffEngine {
 
     /// UTF-8として読み込めるか検証
     pub fn is_utf8_file(path: &Path) -> bool {
-        if let Ok(mut file) = File::open(path) {
+        if let Ok(file) = File::open(path) {
             let mut buf = Vec::new();
             // 先頭から最大 64KB を読み込んで検証
             let mut handle = file.take(65536);
@@ -202,7 +202,7 @@ impl DiffEngine {
                         if left_entries.len() == 1 && right_entries.len() == 1 {
                             // 1対1でペアリング可能
                             let (l_rel, l_path) = &left_entries[0];
-                            let (r_rel, r_path) = &right_entries[0];
+                            let (_, r_path) = &right_entries[0];
                             let result = Self::compare_file_pair(
                                 Some(l_path),
                                 Some(r_path),
