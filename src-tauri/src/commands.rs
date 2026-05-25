@@ -1,6 +1,6 @@
-use crate::models::{CompareSession, DiffOptions, FileDiffDetail, SyncHistory};
 use crate::diff_engine::DiffEngine;
 use crate::git_history::GitHistoryManager;
+use crate::models::{CompareSession, DiffOptions, FileDiffDetail, SyncFolderEntry, SyncHistory};
 use crate::AppState;
 use rfd::FileDialog;
 use std::sync::atomic::Ordering;
@@ -41,8 +41,6 @@ pub async fn cancel_compare(state: tauri::State<'_, AppState>) -> Result<(), Str
     Ok(())
 }
 
-
-
 #[tauri::command]
 pub fn compare_files(
     left: String,
@@ -73,6 +71,28 @@ pub fn sync_file(
         &source_path,
         &target_path,
         &before_hash,
+    )
+}
+
+#[tauri::command]
+pub fn sync_folder(
+    app: AppHandle,
+    session_id: String,
+    mode: String,
+    direction: String,
+    source_path: String,
+    target_path: String,
+    entries: Vec<SyncFolderEntry>,
+) -> Result<SyncHistory, String> {
+    let manager = GitHistoryManager::new(&app);
+    manager.initialize()?;
+    manager.save_folder_sync_snapshot(
+        &session_id,
+        &mode,
+        &direction,
+        &source_path,
+        &target_path,
+        &entries,
     )
 }
 

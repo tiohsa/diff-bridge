@@ -48,7 +48,7 @@ export interface SyncHistory {
   id: string;
   sessionId: string;
   mode: 'bulk' | 'specified';
-  syncType: 'hunk' | 'file';
+  syncType: 'hunk' | 'file' | 'folder';
   direction: 'leftToRight' | 'rightToLeft';
   sourcePath: string;
   targetPath: string;
@@ -57,6 +57,13 @@ export interface SyncHistory {
   commitId: string;
   createdAt: string;
   status: 'success' | 'failed' | 'restored';
+}
+
+export interface SyncFolderEntry {
+  sourcePath: string;
+  targetPath: string;
+  relativePath: string;
+  beforeHash: string;
 }
 
 export interface InlineChangeRange {

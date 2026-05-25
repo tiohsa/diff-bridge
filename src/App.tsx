@@ -5,11 +5,12 @@ import {
   compareDirectories,
   compareFiles,
   syncFile,
+  syncFolder,
   getSyncHistories,
   restoreSync,
   cancelCompare
 } from "./api";
-import { CompareSession, DiffFileResult, DiffOptions, FileDiffDetail, SyncHistory, DiffLine } from "./types";
+import { CompareSession, DiffFileResult, DiffOptions, FileDiffDetail, SyncFolderEntry, SyncHistory, DiffLine } from "./types";
 import "./App.css";
 
 // ==========================================================================
@@ -33,6 +34,16 @@ interface FlatTreeNode {
   status: 'same' | 'modified' | 'leftOnly' | 'rightOnly' | 'uncomparable' | 'ambiguous';
   fileResult?: DiffFileResult;
   hasChildren: boolean;
+}
+
+interface FolderSyncPlan {
+  relativePath: string;
+  folderName: string;
+  direction: 'leftToRight' | 'rightToLeft';
+  sourcePath: string;
+  targetPath: string;
+  entries: SyncFolderEntry[];
+  skippedCount: number;
 }
 
 const buildTreeData = (results: DiffFileResult[]): TreeNode => {
@@ -165,6 +176,22 @@ const flattenTree = (
   return list;
 };
 
+const RadialSpikeIcon = ({ size = 20, className = "", style = {} }: { size?: number, className?: string, style?: React.CSSProperties }) => (
+  <svg 
+    width={size} 
+    height={size} 
+    viewBox="0 0 24 24" 
+    fill="currentColor" 
+    className={`radial-spike ${className}`}
+    style={style}
+  >
+    <path d="M12 2C12.5523 2 13 6.44772 13 12C13 17.5523 12.5523 22 12 22C11.4477 22 11 17.5523 11 12C11 6.44772 11.4477 2 12 2Z" />
+    <path d="M2 12C2 11.4477 6.44772 11 12 11C17.5523 11 22 11.4477 22 12C22 12.5523 17.5523 13 12 13C6.44772 13 2 12.5523 2 12Z" />
+    <circle cx="12" cy="12" r="2.5" />
+  </svg>
+);
+
+
 const defaultOptions: DiffOptions = {
   matchRule: "relativePath",
   ignoreWhitespace: false,
@@ -176,6 +203,13 @@ const defaultOptions: DiffOptions = {
   allowWsl2Paths: true,
   maxWarnFileSizeMb: 10,
   maxComparableFileSizeMb: 100
+};
+
+const joinPath = (root: string, relativePath: string) => {
+  if (!relativePath) return root;
+  const normalizedRoot = root.replace(/[\\/]+$/, "");
+  const normalizedRelative = relativePath.replace(/^[\\/]+/, "");
+  return `${normalizedRoot}/${normalizedRelative}`;
 };
 
 export default function App() {
@@ -208,6 +242,7 @@ export default function App() {
   // Sync Confirmation Dialog State
   const [showSyncConfirm, setShowSyncConfirm] = useState<boolean>(false);
   const [syncDirection, setSyncDirection] = useState<'leftToRight' | 'rightToLeft' | null>(null);
+  const [folderSyncPlan, setFolderSyncPlan] = useState<FolderSyncPlan | null>(null);
   const [syncing, setSyncing] = useState<boolean>(false);
 
   // Histories State
@@ -452,6 +487,98 @@ export default function App() {
     }
   };
 
+  const buildFolderSyncPlan = (
+    relativePath: string,
+    folderName: string,
+    direction: 'leftToRight' | 'rightToLeft'
+  ): FolderSyncPlan | null => {
+    if (!session?.leftRoot || !session?.rightRoot) return null;
+
+    const entries: SyncFolderEntry[] = [];
+    let skippedCount = 0;
+    const isLeftToRight = direction === "leftToRight";
+
+    session.results.forEach((result) => {
+      const resultRelative = result.relativePath || result.fileName;
+      const isInsideFolder = resultRelative === relativePath || resultRelative.startsWith(`${relativePath}/`);
+      if (!isInsideFolder || result.status === "same") return;
+
+      const sourcePath = isLeftToRight ? result.leftPath : result.rightPath;
+      const targetPath = isLeftToRight
+        ? (result.rightPath || joinPath(session.rightRoot!, resultRelative))
+        : (result.leftPath || joinPath(session.leftRoot!, resultRelative));
+      const beforeHash = isLeftToRight ? (result.rightHash || "") : (result.leftHash || "");
+      const entryRelativePath = resultRelative.startsWith(`${relativePath}/`)
+        ? resultRelative.slice(relativePath.length + 1)
+        : result.fileName;
+
+      if (!sourcePath) {
+        skippedCount += 1;
+        return;
+      }
+
+      entries.push({
+        sourcePath,
+        targetPath,
+        relativePath: entryRelativePath,
+        beforeHash,
+      });
+    });
+
+    return {
+      relativePath,
+      folderName,
+      direction,
+      sourcePath: joinPath(isLeftToRight ? session.leftRoot : session.rightRoot, relativePath),
+      targetPath: joinPath(isLeftToRight ? session.rightRoot : session.leftRoot, relativePath),
+      entries,
+      skippedCount,
+    };
+  };
+
+  const handlePrepareFolderSync = (
+    node: FlatTreeNode,
+    direction: 'leftToRight' | 'rightToLeft',
+    event: React.MouseEvent
+  ) => {
+    event.stopPropagation();
+    const plan = buildFolderSyncPlan(node.relativePath, node.name, direction);
+    if (!plan || plan.entries.length === 0) {
+      alert("このフォルダには、指定方向に反映できる差分ファイルがありません。");
+      return;
+    }
+    setFolderSyncPlan(plan);
+  };
+
+  const handleExecuteFolderSync = async () => {
+    if (!folderSyncPlan) return;
+    setSyncing(true);
+    setErrorMsg(null);
+    try {
+      await syncFolder(
+        session?.id || "manual-folder-sync",
+        session?.mode || "bulk",
+        folderSyncPlan.direction,
+        folderSyncPlan.sourcePath,
+        folderSyncPlan.targetPath,
+        folderSyncPlan.entries
+      );
+
+      setFolderSyncPlan(null);
+      alert("フォルダ同期が完了しました。履歴にGitコミットとして保存されました。");
+
+      if (session && session.leftRoot && session.rightRoot) {
+        await handleCompareDirs();
+      }
+      loadHistories();
+    } catch (e: any) {
+      setErrorMsg(e.toString());
+      alert(`フォルダ同期エラー: ${e.toString()}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   // Sync execution
   const handleExecuteSync = async () => {
     if (!activeFileResult || !syncDirection) return;
@@ -632,23 +759,32 @@ export default function App() {
       {/* Premium Navigation Header */}
       <header className="app-header">
         <div className="logo-section" onClick={() => setView('home')}>
-          <div className="logo-icon">✦</div>
+          <div className="logo-icon" style={{ background: 'transparent', color: 'var(--color-primary)', width: 'auto', height: 'auto' }}>
+            <RadialSpikeIcon size={26} />
+          </div>
           <div className="logo-text">diff-bridge</div>
         </div>
-        <nav className="nav-links">
-          <button className={`nav-button ${view === 'home' ? 'active' : ''}`} onClick={() => setView('home')}>
-            ホーム
-          </button>
-          <button className={`nav-button ${view === 'bulk-diff' ? 'active' : ''}`} onClick={() => { if(session) { setView('bulk-diff') } else { setView('home') } }}>
-            一括比較
-          </button>
-          <button className={`nav-button ${view === 'history' ? 'active' : ''}`} onClick={() => { loadHistories(); setView('history'); }}>
-            同期履歴
-          </button>
-          <button className={`nav-button ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>
-            設定
-          </button>
-        </nav>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+          <nav className="nav-links">
+            <button className={`nav-button ${view === 'home' ? 'active' : ''}`} onClick={() => setView('home')}>
+              ホーム
+            </button>
+            <button className={`nav-button ${view === 'bulk-diff' ? 'active' : ''}`} onClick={() => setView('bulk-diff')}>
+              一括比較
+            </button>
+            <button className={`nav-button ${view === 'history' ? 'active' : ''}`} onClick={() => { loadHistories(); setView('history'); }}>
+              同期履歴
+            </button>
+            <button className={`nav-button ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>
+              設定
+            </button>
+          </nav>
+          {view !== 'bulk-diff' && (
+            <button className="btn btn-primary" style={{ padding: '0.45rem 1.1rem', fontSize: '0.82rem', height: '36px' }} onClick={() => { setSession(null); setView('bulk-diff'); }}>
+              新規比較
+            </button>
+          )}
+        </div>
       </header>
 
       {/* Main View Area */}
@@ -666,36 +802,42 @@ export default function App() {
         {/* ==================== HOME VIEW ==================== */}
         {view === 'home' && (
           <div className="home-layout">
-            <div className="glass-panel">
-              <h1 className="page-title">差分比較・同期アシスタント</h1>
-              <p className="page-subtitle">2つのディレクトリまたはファイルを比較し、安全に同期と履歴の管理を行います。</p>
+            <div className="home-hero">
+              <h1 className="title-with-spike" style={{ justifyContent: 'center' }}>
+                <RadialSpikeIcon size={34} style={{ color: 'var(--color-primary)' }} />
+                <span>差分比較・同期アシスタント</span>
+              </h1>
+              <p>2つのディレクトリまたはファイルを精密に比較し、安全に同期と履歴の管理を行います。</p>
+            </div>
               
-              <div className="mode-cards">
-                <div className="mode-card" onClick={() => { setSession(null); setView('bulk-diff'); }}>
-                  <div className="mode-card-icon">📁</div>
-                  <h3>ディレクトリ一括比較</h3>
-                  <p>同名のディレクトリを再帰的に走査し、相対パスが一致するファイルをペアリングして一括比較します。WSL2 Linux配下も対応。</p>
-                  <button className="btn btn-primary" style={{ marginTop: 'auto', alignSelf: 'flex-start' }}>
-                    一括比較を開始
-                  </button>
-                </div>
+            <div className="mode-cards">
+              <div className="mode-card" onClick={() => { setSession(null); setView('bulk-diff'); }}>
+                <div className="mode-card-icon">📁</div>
+                <h3>ディレクトリ一括比較</h3>
+                <p>同名のディレクトリを再帰的に走査し、相対パスが一致するファイルをペアリングして一括比較します。WSL2 Linux配下も完全対応。</p>
+                <button className="btn btn-primary" style={{ marginTop: 'auto', alignSelf: 'flex-start' }}>
+                  一括比較を開始
+                </button>
+              </div>
 
-                <div className="mode-card" onClick={() => { setSession(null); setView('specified-diff'); }}>
-                  <div className="mode-card-icon">📄</div>
-                  <h3>任意の2ファイル比較</h3>
-                  <p>ファイル名や保存場所が異なる任意のテキストファイルを2つ選択し、行単位・文字単位で差分を詳細表示します。</p>
-                  <button className="btn btn-secondary" style={{ marginTop: 'auto', alignSelf: 'flex-start' }}>
-                    ファイル指定比較
-                  </button>
-                </div>
+              <div className="mode-card" onClick={() => { setSession(null); setView('specified-diff'); }}>
+                <div className="mode-card-icon">📄</div>
+                <h3>任意の2ファイル比較</h3>
+                <p>ファイル名や保存場所が異なる任意のテキストファイルを2つ選択し、行単位・文字単位で差分を詳細表示します。</p>
+                <button className="btn btn-secondary" style={{ marginTop: 'auto', alignSelf: 'flex-start' }}>
+                  ファイル指定比較
+                </button>
               </div>
             </div>
 
             {/* Recent Sessions */}
             {recentSessions.length > 0 && (
-              <div className="glass-panel recent-sessions">
-                <h3 className="recent-title">⏱️ 最近使用した比較対象</h3>
-                <div className="session-list">
+              <div className="setup-card recent-sessions" style={{ marginTop: '1rem' }}>
+                <h3 className="recent-title title-with-spike">
+                  <RadialSpikeIcon size={18} />
+                  <span>最近使用した比較対象</span>
+                </h3>
+                <div className="session-list" style={{ marginTop: '1rem' }}>
                   {recentSessions.map((s, idx) => (
                     <div key={idx} className="session-item" onClick={() => {
                       setLeftRoot(s.leftRoot || "");
@@ -719,103 +861,159 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {/* Showcase Dark Product Card (Cream-to-Dark rhythm) */}
+            <div className="product-mockup-card-dark">
+              <h3>
+                <RadialSpikeIcon size={22} />
+                <span>超高速・高性能なコード同期エンジン</span>
+              </h3>
+              <p>
+                diff-bridge は Tauri バックエンドで Rust をフル活用し、数万ファイルにおよぶディレクトリ同士でもハッシュ計算によってミリ秒単位で差分を検出します。同期操作はアプリ内の専用 Git 管理下で自動コミットされるため、ワンクリックでいつでも復元可能です。
+              </p>
+              
+              <div className="code-window-card">
+                <div className="code-window-line">
+                  <span className="code-window-ln">1</span>
+                  <span className="code-window-text"><span className="highlight-teal">fn</span> <span className="highlight-green">compare_files</span>(left: &amp;Path, right: &amp;Path) -&gt; Result&lt;Diff, Error&gt; &#123;</span>
+                </div>
+                <div className="code-window-line">
+                  <span className="code-window-ln">2</span>
+                  <span className="code-window-text">    <span className="highlight-teal">let</span> left_hash = <span className="highlight-green">hash_file</span>(left)?;</span>
+                </div>
+                <div className="code-window-line">
+                  <span className="code-window-ln">3</span>
+                  <span className="code-window-text">    <span className="highlight-teal">let</span> right_hash = <span className="highlight-green">hash_file</span>(right)?;</span>
+                </div>
+                <div className="code-window-line">
+                  <span className="code-window-ln">4</span>
+                  <span className="code-window-text">    <span className="highlight-coral">if</span> left_hash == right_hash &#123;</span>
+                </div>
+                <div className="code-window-line">
+                  <span className="code-window-ln">5</span>
+                  <span className="code-window-text highlight-green">        Ok(Diff::Same)</span>
+                </div>
+                <div className="code-window-line">
+                  <span className="code-window-ln">6</span>
+                  <span className="code-window-text">    &#125; <span className="highlight-coral">else</span> &#123;</span>
+                </div>
+                <div className="code-window-line">
+                  <span className="code-window-ln">7</span>
+                  <span className="code-window-text highlight-coral">        Ok(Diff::Modified)</span>
+                </div>
+                <div className="code-window-line">
+                  <span className="code-window-ln">8</span>
+                  <span className="code-window-text">    &#125;</span>
+                </div>
+                <div className="code-window-line">
+                  <span className="code-window-ln">9</span>
+                  <span className="code-window-text">&#125;</span>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
         {/* ==================== BULK DIFF VIEW ==================== */}
         {view === 'bulk-diff' && (
-          <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            <h2 className="page-title">📁 ディレクトリ一括比較</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <h2 className="page-title title-with-spike">
+              <RadialSpikeIcon size={24} />
+              <span>ディレクトリ一括比較</span>
+            </h2>
             
-            <div className="compare-setup">
-              <div className="path-selector-grid">
-                <div className="path-box">
-                  <label>左側ディレクトリ (ソースA)</label>
-                  <div className="input-group">
-                    <input 
-                      type="text" 
-                      className="input-text" 
-                      placeholder="C:\path\to\directory-a" 
-                      value={leftRoot}
-                      onChange={(e) => setLeftRoot(e.target.value)}
-                    />
-                    <button className="btn btn-secondary" onClick={handleSelectLeftDir}>
-                      参照...
-                    </button>
+            <div className="setup-card">
+              <h3 className="setup-card-title">比較対象ディレクトリの指定</h3>
+              <div className="compare-setup">
+                <div className="path-selector-grid">
+                  <div className="path-box">
+                    <label>左側ディレクトリ (ソースA)</label>
+                    <div className="input-group">
+                      <input 
+                        type="text" 
+                        className="input-text" 
+                        placeholder="C:\path\to\directory-a" 
+                        value={leftRoot}
+                        onChange={(e) => setLeftRoot(e.target.value)}
+                      />
+                      <button className="btn btn-secondary" onClick={handleSelectLeftDir}>
+                        参照...
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="path-box">
+                    <label>右側ディレクトリ (ソースB)</label>
+                    <div className="input-group">
+                      <input 
+                        type="text" 
+                        className="input-text" 
+                        placeholder="\\wsl$\Ubuntu\home\user\directory-b" 
+                        value={rightRoot}
+                        onChange={(e) => setRightRoot(e.target.value)}
+                      />
+                      <button className="btn btn-secondary" onClick={handleSelectRightDir}>
+                        参照...
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                <div className="path-box">
-                  <label>右側ディレクトリ (ソースB)</label>
-                  <div className="input-group">
-                    <input 
-                      type="text" 
-                      className="input-text" 
-                      placeholder="\\wsl$\Ubuntu\home\user\directory-b" 
-                      value={rightRoot}
-                      onChange={(e) => setRightRoot(e.target.value)}
-                    />
-                    <button className="btn btn-secondary" onClick={handleSelectRightDir}>
-                      参照...
-                    </button>
-                  </div>
+                {/* Options Accordion */}
+                <div className="options-accordion">
+                  <button className="options-trigger" onClick={() => setShowOptions(!showOptions)}>
+                    <span>⚙️ 比較オプション設定</span>
+                    <span>{showOptions ? "▲" : "▼"}</span>
+                  </button>
+                  {showOptions && (
+                    <div className="options-content">
+                      <label className="checkbox-label">
+                        <input 
+                          type="checkbox" 
+                          checked={options.useGitignore}
+                          onChange={(e) => setOptions({ ...options, useGitignore: e.target.checked })}
+                        />
+                        .gitignore ルールを除外適用
+                      </label>
+                      <label className="checkbox-label">
+                        <input 
+                          type="checkbox" 
+                          checked={options.matchRule === "fileName"}
+                          onChange={(e) => setOptions({ ...options, matchRule: e.target.checked ? "fileName" : "relativePath" })}
+                        />
+                        ファイル名一致で照合（階層無視）
+                      </label>
+                      <label className="checkbox-label">
+                        <input 
+                          type="checkbox" 
+                          checked={options.ignoreWhitespace}
+                          onChange={(e) => setOptions({ ...options, ignoreWhitespace: e.target.checked })}
+                        />
+                        空白の変更を無視
+                      </label>
+                      <label className="checkbox-label">
+                        <input 
+                          type="checkbox" 
+                          checked={options.ignoreCase}
+                          onChange={(e) => setOptions({ ...options, ignoreCase: e.target.checked })}
+                        />
+                        大文字・小文字の変更を無視
+                      </label>
+                    </div>
+                  )}
                 </div>
-              </div>
 
-              {/* Options Accordion */}
-              <div className="options-accordion">
-                <button className="options-trigger" onClick={() => setShowOptions(!showOptions)}>
-                  <span>⚙️ 比較オプション設定</span>
-                  <span>{showOptions ? "▲" : "▼"}</span>
+                <button className="btn btn-primary" onClick={handleCompareDirs} disabled={loading} style={{ alignSelf: 'flex-end', minWidth: '150px' }}>
+                  {loading ? "比較中..." : "ディレクトリを比較 ➔"}
                 </button>
-                {showOptions && (
-                  <div className="options-content">
-                    <label className="checkbox-label">
-                      <input 
-                        type="checkbox" 
-                        checked={options.useGitignore}
-                        onChange={(e) => setOptions({ ...options, useGitignore: e.target.checked })}
-                      />
-                      .gitignore ルールを除外適用
-                    </label>
-                    <label className="checkbox-label">
-                      <input 
-                        type="checkbox" 
-                        checked={options.matchRule === "fileName"}
-                        onChange={(e) => setOptions({ ...options, matchRule: e.target.checked ? "fileName" : "relativePath" })}
-                      />
-                      ファイル名一致で照合（階層無視）
-                    </label>
-                    <label className="checkbox-label">
-                      <input 
-                        type="checkbox" 
-                        checked={options.ignoreWhitespace}
-                        onChange={(e) => setOptions({ ...options, ignoreWhitespace: e.target.checked })}
-                      />
-                      空白の変更を無視
-                    </label>
-                    <label className="checkbox-label">
-                      <input 
-                        type="checkbox" 
-                        checked={options.ignoreCase}
-                        onChange={(e) => setOptions({ ...options, ignoreCase: e.target.checked })}
-                      />
-                      大文字・小文字の変更を無視
-                    </label>
-                  </div>
-                )}
               </div>
-
-              <button className="btn btn-primary" onClick={handleCompareDirs} disabled={loading} style={{ alignSelf: 'flex-end', minWidth: '150px' }}>
-                {loading ? "比較中..." : "📁 ディレクトリを比較"}
-              </button>
             </div>
 
             {/* Spinner Progress Screen */}
             {loading && (
-              <div className="progress-container">
+              <div className="setup-card progress-container" style={{ background: 'var(--color-surface-soft)' }}>
                 <div className="spinner"></div>
-                <p style={{ color: 'var(--text-secondary)' }}>
+                <p style={{ color: 'var(--color-muted)', fontSize: '0.95rem' }}>
                   ファイルを照合し、差分を抽出しています... 大量ファイルの場合は時間がかかることがあります。
                 </p>
                 <button 
@@ -836,7 +1034,7 @@ export default function App() {
 
             {/* Session comparison results list */}
             {session && !loading && (
-              <div>
+              <div className="results-section">
                 <div className="results-header">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
                     <div className="filter-tabs">
@@ -891,7 +1089,7 @@ export default function App() {
                 </div>
 
                 {filteredResults.length === 0 ? (
-                  <div className="empty-state">
+                  <div className="setup-card empty-state" style={{ background: 'var(--color-surface-soft)' }}>
                     <div className="empty-state-icon">📂</div>
                     <p>該当するファイルはありません。</p>
                   </div>
@@ -906,7 +1104,7 @@ export default function App() {
                         <div className="tree-pane" ref={leftTreeRef} onScroll={handleLeftTreeScroll}>
                           <h4>左側: {session.leftRoot?.split(/[/\\]/).pop() || "左フォルダ"}</h4>
                           {flatNodes.length === 0 ? (
-                            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>フォルダが空か、対象ファイルがありません。</p>
+                            <p style={{ color: 'var(--color-on-dark-soft)', fontSize: '0.9rem' }}>フォルダが空か、対象ファイルがありません。</p>
                           ) : (
                             flatNodes.map(node => {
                               const isRightOnly = node.status === 'rightOnly';
@@ -936,6 +1134,15 @@ export default function App() {
                                     <span>📄</span>
                                   )}
                                   <span className="tree-item-name">{node.name}</span>
+                                  {node.type === 'folder' && node.status !== 'same' && node.status !== 'rightOnly' && (
+                                    <button
+                                      className="tree-item-history-btn"
+                                      title="このフォルダ配下の差分を右側へ反映"
+                                      onClick={(e) => handlePrepareFolderSync(node, "leftToRight", e)}
+                                    >
+                                      右へ
+                                    </button>
+                                  )}
                                   {node.type === 'file' && (
                                     <>
                                       {node.fileResult && (
@@ -970,7 +1177,7 @@ export default function App() {
                         <div className="tree-pane" ref={rightTreeRef} onScroll={handleRightTreeScroll}>
                           <h4>右側: {session.rightRoot?.split(/[/\\]/).pop() || "右フォルダ"}</h4>
                           {flatNodes.length === 0 ? (
-                            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>フォルダが空か、対象ファイルがありません。</p>
+                            <p style={{ color: 'var(--color-on-dark-soft)', fontSize: '0.9rem' }}>フォルダが空か、対象ファイルがありません。</p>
                           ) : (
                             flatNodes.map(node => {
                               const isLeftOnly = node.status === 'leftOnly';
@@ -1000,6 +1207,15 @@ export default function App() {
                                     <span>📄</span>
                                   )}
                                   <span className="tree-item-name">{node.name}</span>
+                                  {node.type === 'folder' && node.status !== 'same' && node.status !== 'leftOnly' && (
+                                    <button
+                                      className="tree-item-history-btn"
+                                      title="このフォルダ配下の差分を左側へ反映"
+                                      onClick={(e) => handlePrepareFolderSync(node, "rightToLeft", e)}
+                                    >
+                                      左へ
+                                    </button>
+                                  )}
                                   {node.type === 'file' && (
                                     <>
                                       {node.fileResult && (
@@ -1049,7 +1265,7 @@ export default function App() {
                           <tr key={item.id} onClick={() => handleShowFileDiff(item)}>
                             <td style={{ fontWeight: '500' }}>
                               <div>{item.fileName}</div>
-                              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                              <div style={{ fontSize: '0.8rem', color: 'var(--color-muted)', marginTop: '0.2rem' }}>
                                 {item.relativePath || "/"}
                               </div>
                             </td>
@@ -1106,27 +1322,32 @@ export default function App() {
 
         {/* ==================== SPECIFIED DIFF VIEW ==================== */}
         {view === 'specified-diff' && (
-          <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            <h2 className="page-title">📄 任意の2ファイル比較</h2>
-            <p className="page-subtitle">ファイル名や配置ディレクトリ階層が異なる2つのテキストファイルを個別に比較します。</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <h2 className="page-title title-with-spike">
+              <RadialSpikeIcon size={24} />
+              <span>任意の2ファイル比較</span>
+            </h2>
+            <p className="page-subtitle" style={{ marginBottom: '0.5rem' }}>ファイル名や配置ディレクトリ階層が異なる2つのテキストファイルを個別に比較します。</p>
 
-            <div className="compare-setup">
-              <div className="path-selector-grid">
-                <div className="path-box">
-                  <label>左側ファイル (比較対象A)</label>
-                  <div className="input-group">
-                    <input 
-                      type="text" 
-                      className="input-text" 
-                      placeholder="C:\path\to\file-a.txt" 
-                      value={leftFile}
-                      onChange={(e) => setLeftFile(e.target.value)}
-                    />
-                    <button className="btn btn-secondary" onClick={handleSelectLeftFile}>
-                      参照...
-                    </button>
+            <div className="setup-card">
+              <h3 className="setup-card-title">比較対象ファイルの指定</h3>
+              <div className="compare-setup">
+                <div className="path-selector-grid">
+                  <div className="path-box">
+                    <label>左側ファイル (比較対象A)</label>
+                    <div className="input-group">
+                      <input 
+                        type="text" 
+                        className="input-text" 
+                        placeholder="C:\path\to\file-a.txt" 
+                        value={leftFile}
+                        onChange={(e) => setLeftFile(e.target.value)}
+                      />
+                      <button className="btn btn-secondary" onClick={handleSelectLeftFile}>
+                        参照...
+                      </button>
+                    </div>
                   </div>
-                </div>
 
                 <div className="path-box">
                   <label>右側ファイル (比較対象B)</label>
@@ -1174,27 +1395,31 @@ export default function App() {
               </div>
 
               <button className="btn btn-primary" onClick={handleCompareFiles} disabled={loading} style={{ alignSelf: 'flex-end', minWidth: '150px' }}>
-                {loading ? "比較中..." : "📄 ファイルを比較"}
+                {loading ? "比較中..." : "ファイルを比較 ➔"}
               </button>
             </div>
           </div>
-        )}
+        </div>
+      )}
 
 
 
         {/* ==================== HISTORY VIEW ==================== */}
         {view === 'history' && (
-          <div className="glass-panel">
-            <h2 className="page-title">⏱️ 同期履歴・復元</h2>
-            <p className="page-subtitle">これまでの同期操作（ファイル上書き・新規作成）の全履歴です。Gitコミットに基づいて安全に復旧できます。</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <h2 className="page-title title-with-spike">
+              <RadialSpikeIcon size={24} />
+              <span>同期履歴・復元</span>
+            </h2>
+            <p className="page-subtitle" style={{ marginBottom: '0.5rem' }}>これまでの同期操作（ファイル上書き・新規作成）の全履歴です。Gitコミットに基づいて安全に復旧できます。</p>
 
             {historyLoading ? (
-              <div className="progress-container">
+              <div className="setup-card progress-container" style={{ background: 'var(--color-surface-soft)' }}>
                 <div className="spinner"></div>
                 <p>同期履歴を読み込んでいます...</p>
               </div>
             ) : histories.length === 0 ? (
-              <div className="empty-state">
+              <div className="setup-card empty-state" style={{ background: 'var(--color-surface-soft)' }}>
                 <div className="empty-state-icon">⏱️</div>
                 <p>同期操作の履歴はまだ存在しません。</p>
               </div>
@@ -1205,7 +1430,11 @@ export default function App() {
                     <div className="history-node-header">
                       <div className="history-meta-top">
                         <span className="history-action-text">
-                          {h.status === "restored" ? "↩️ 復元操作完了" : "⇄ ファイル単位同期"}
+                          {h.status === "restored"
+                            ? "↩️ 復元操作完了"
+                            : h.syncType === "folder"
+                              ? "⇄ フォルダ単位同期"
+                              : "⇄ ファイル単位同期"}
                         </span>
                         <span className="history-time">
                           {new Date(h.createdAt).toLocaleString("ja-JP")}
@@ -1231,6 +1460,10 @@ export default function App() {
 
                     <div className="history-node-body">
                       <div className="history-path-info">
+                        <label>同期単位:</label>
+                        <span>{h.syncType === "folder" ? "フォルダ" : "ファイル"}</span>
+                      </div>
+                      <div className="history-path-info">
                         <label>同期方向:</label>
                         <span>{h.direction === "leftToRight" ? "左 ➔ 右 (上書き・作成)" : "右 ➔ 左 (上書き・作成)"}</span>
                       </div>
@@ -1255,49 +1488,55 @@ export default function App() {
 
         {/* ==================== SETTINGS VIEW ==================== */}
         {view === 'settings' && (
-          <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            <h2 className="page-title">⚙️ システム設定</h2>
-            <p className="page-subtitle">アプリケーションの基本動作パラメータを設定します。</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <h2 className="page-title title-with-spike">
+              <RadialSpikeIcon size={24} />
+              <span>システム設定</span>
+            </h2>
+            <p className="page-subtitle" style={{ marginBottom: '0.5rem' }}>アプリケーションの基本動作パラメータを設定します。</p>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem', maxWidth: '600px' }}>
-              <div className="path-box">
-                <label>大容量ファイル警告の閾値 (MB)</label>
-                <input 
-                  type="number" 
-                  className="input-text" 
-                  value={options.maxWarnFileSizeMb}
-                  onChange={(e) => setOptions({ ...options, maxWarnFileSizeMb: parseFloat(e.target.value) || 10 })}
-                />
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  このサイズを超えるファイルを比較する場合、パフォーマンス低下を防ぐために警告を表示します。
-                </span>
-              </div>
+            <div className="setup-card" style={{ maxWidth: '700px' }}>
+              <h3 className="setup-card-title">動作パラメータ設定</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                <div className="path-box">
+                  <label>大容量ファイル警告の閾値 (MB)</label>
+                  <input 
+                    type="number" 
+                    className="input-text" 
+                    value={options.maxWarnFileSizeMb}
+                    onChange={(e) => setOptions({ ...options, maxWarnFileSizeMb: parseFloat(e.target.value) || 10 })}
+                  />
+                  <span style={{ fontSize: '0.8rem', color: 'var(--color-muted)' }}>
+                    このサイズを超えるファイルを比較する場合、パフォーマンス低下を防ぐために警告を表示します。
+                  </span>
+                </div>
 
-              <div className="path-box">
-                <label>最大比較可能ファイルサイズの閾値 (MB)</label>
-                <input 
-                  type="number" 
-                  className="input-text" 
-                  value={options.maxComparableFileSizeMb}
-                  onChange={(e) => setOptions({ ...options, maxComparableFileSizeMb: parseFloat(e.target.value) || 100 })}
-                />
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  このサイズを超える大容量ファイルは、クラッシュ回避のため初期設定で比較対象外とします。
-                </span>
-              </div>
+                <div className="path-box">
+                  <label>最大比較可能ファイルサイズの閾値 (MB)</label>
+                  <input 
+                    type="number" 
+                    className="input-text" 
+                    value={options.maxComparableFileSizeMb}
+                    onChange={(e) => setOptions({ ...options, maxComparableFileSizeMb: parseFloat(e.target.value) || 100 })}
+                  />
+                  <span style={{ fontSize: '0.8rem', color: 'var(--color-muted)' }}>
+                    このサイズを超える大容量ファイルは、クラッシュ回避のため初期設定で比較対象外とします。
+                  </span>
+                </div>
 
-              <div className="path-box">
-                <label>履歴管理の保存方針</label>
-                <input 
-                  type="text" 
-                  className="input-text" 
-                  value="アプリ専用Git管理領域（ローカルAppData保存）" 
-                  disabled 
-                  style={{ opacity: 0.7 }}
-                />
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  同期操作はアプリデータ領域内のGitリポジトリへ安全にバックアップされ、既存プロジェクトのGit履歴を汚しません。
-                </span>
+                <div className="path-box">
+                  <label>履歴管理の保存方針</label>
+                  <input 
+                    type="text" 
+                    className="input-text" 
+                    value="アプリ専用Git管理領域（ローカルAppData保存）" 
+                    disabled 
+                    style={{ opacity: 0.7 }}
+                  />
+                  <span style={{ fontSize: '0.8rem', color: 'var(--color-muted)' }}>
+                    同期操作はアプリデータ領域内のGitリポジトリへ安全にバックアップされ、既存プロジェクトのGit履歴を汚しません。
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -1431,7 +1670,10 @@ export default function App() {
         <div className="modal-overlay">
           <div className="modal-content">
             <div className="modal-header">
-              <h3>⚡ 同期の最終確認</h3>
+              <h3 className="title-with-spike">
+                <RadialSpikeIcon size={22} style={{ color: 'var(--color-primary)' }} />
+                <span>同期の最終確認</span>
+              </h3>
             </div>
             
             <div className="modal-body">
@@ -1482,6 +1724,72 @@ export default function App() {
         </div>
       )}
 
+      {/* ==================== FOLDER SYNC CONFIRMATION DIALOG ==================== */}
+      {folderSyncPlan && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3 className="title-with-spike">
+                <RadialSpikeIcon size={22} style={{ color: 'var(--color-primary)' }} />
+                <span>フォルダ同期の最終確認</span>
+              </h3>
+            </div>
+
+            <div className="modal-body">
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>
+                選択したフォルダ配下の差分ファイルをまとめて上書き、または新規作成します。同期先だけに存在するファイルは削除しません。
+              </p>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.8rem', margin: '1rem 0' }}>
+                <div className="sync-flow-node">
+                  <span>対象フォルダ</span>
+                  <p>{folderSyncPlan.relativePath}</p>
+                </div>
+                <div className="sync-flow-node">
+                  <span>反映ファイル数</span>
+                  <p>{folderSyncPlan.entries.length} 件</p>
+                </div>
+                <div className="sync-flow-node">
+                  <span>スキップ</span>
+                  <p>{folderSyncPlan.skippedCount} 件</p>
+                </div>
+              </div>
+
+              <div className="sync-confirm-flow">
+                <div className="sync-flow-node">
+                  <span>同期元フォルダ</span>
+                  <p>{folderSyncPlan.sourcePath}</p>
+                </div>
+                <div className="sync-flow-arrow">➔</div>
+                <div className="sync-flow-node">
+                  <span>同期先フォルダ</span>
+                  <p>{folderSyncPlan.targetPath}</p>
+                </div>
+              </div>
+
+              <div className="warning-alert">
+                <span>⚠️</span>
+                <div>
+                  <strong>破壊的操作の警告:</strong>
+                  <p style={{ marginTop: '0.2rem' }}>
+                    同期対象ファイルの既存データは上書きされます。同期前後の状態はアプリの専用Git履歴に保存されます。
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setFolderSyncPlan(null)} disabled={syncing}>
+                キャンセル
+              </button>
+              <button className="btn btn-primary" onClick={handleExecuteFolderSync} disabled={syncing}>
+                {syncing ? "フォルダ同期を実行中..." : "確認してフォルダ同期を実行"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ==================== FILE HISTORY MODAL ==================== */}
       {historyFileResult && (
         <div className="modal-overlay">
@@ -1489,7 +1797,10 @@ export default function App() {
             <div className="modal-header">
               <div className="detail-path-title">
                 <span>ファイル履歴</span>
-                <h3>⏱️ {historyFileResult.fileName} の同期履歴</h3>
+                <h3 className="title-with-spike" style={{ marginTop: '0.25rem' }}>
+                  <RadialSpikeIcon size={22} style={{ color: 'var(--color-primary)' }} />
+                  <span>{historyFileResult.fileName} の同期履歴</span>
+                </h3>
               </div>
               <button 
                 className="btn btn-secondary btn-icon" 

@@ -1,15 +1,196 @@
-use crate::models::SyncHistory;
+use crate::models::{SyncFolderEntry, SyncHistory};
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::Read;
+use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 pub struct GitHistoryManager {
     git_dir: PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::io::Write;
+
+    fn test_root(name: &str) -> PathBuf {
+        env::temp_dir().join(format!("diff_bridge_{}_{}", name, Uuid::new_v4()))
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let mut file = File::create(path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+    }
+
+    fn setup_manager(root: &Path) -> GitHistoryManager {
+        let manager = GitHistoryManager::new_for_testing(root.join("history"));
+        manager.initialize().unwrap();
+        manager
+    }
+
+    #[test]
+    fn folder_sync_copies_multiple_files_without_deleting_extra_target_files() {
+        let root = test_root("folder_copy");
+        let manager = setup_manager(&root);
+        let left = root.join("left").join("docs");
+        let right = root.join("right").join("docs");
+
+        write_file(&left.join("a.txt"), "new a");
+        write_file(&left.join("nested").join("b.txt"), "new b");
+        write_file(&right.join("a.txt"), "old a");
+        write_file(&right.join("extra.txt"), "keep me");
+
+        let entries = vec![
+            SyncFolderEntry {
+                source_path: left.join("a.txt").to_string_lossy().to_string(),
+                target_path: right.join("a.txt").to_string_lossy().to_string(),
+                relative_path: "a.txt".to_string(),
+                before_hash: GitHistoryManager::calculate_hash(&right.join("a.txt")).unwrap(),
+            },
+            SyncFolderEntry {
+                source_path: left
+                    .join("nested")
+                    .join("b.txt")
+                    .to_string_lossy()
+                    .to_string(),
+                target_path: right
+                    .join("nested")
+                    .join("b.txt")
+                    .to_string_lossy()
+                    .to_string(),
+                relative_path: "nested/b.txt".to_string(),
+                before_hash: "".to_string(),
+            },
+        ];
+
+        let history = manager
+            .save_folder_sync_snapshot(
+                "session",
+                "bulk",
+                "leftToRight",
+                &left.to_string_lossy(),
+                &right.to_string_lossy(),
+                &entries,
+            )
+            .unwrap();
+
+        assert_eq!(history.sync_type, "folder");
+        assert_eq!(fs::read_to_string(right.join("a.txt")).unwrap(), "new a");
+        assert_eq!(
+            fs::read_to_string(right.join("nested").join("b.txt")).unwrap(),
+            "new b"
+        );
+        assert_eq!(
+            fs::read_to_string(right.join("extra.txt")).unwrap(),
+            "keep me"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folder_sync_stops_when_target_changed_after_compare() {
+        let root = test_root("folder_external_change");
+        let manager = setup_manager(&root);
+        let left = root.join("left").join("docs");
+        let right = root.join("right").join("docs");
+
+        write_file(&left.join("a.txt"), "new a");
+        write_file(&right.join("a.txt"), "changed outside");
+
+        let entries = vec![SyncFolderEntry {
+            source_path: left.join("a.txt").to_string_lossy().to_string(),
+            target_path: right.join("a.txt").to_string_lossy().to_string(),
+            relative_path: "a.txt".to_string(),
+            before_hash: "stale-hash".to_string(),
+        }];
+
+        let err = manager
+            .save_folder_sync_snapshot(
+                "session",
+                "bulk",
+                "leftToRight",
+                &left.to_string_lossy(),
+                &right.to_string_lossy(),
+                &entries,
+            )
+            .unwrap_err();
+
+        assert!(err.contains("External change detected"));
+        assert_eq!(
+            fs::read_to_string(right.join("a.txt")).unwrap(),
+            "changed outside"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folder_sync_restore_reverts_touched_files_and_removes_created_files() {
+        let root = test_root("folder_restore");
+        let manager = setup_manager(&root);
+        let left = root.join("left").join("docs");
+        let right = root.join("right").join("docs");
+
+        write_file(&left.join("a.txt"), "new a");
+        write_file(&left.join("nested").join("b.txt"), "new b");
+        write_file(&right.join("a.txt"), "old a");
+        write_file(&right.join("extra.txt"), "keep me");
+
+        let entries = vec![
+            SyncFolderEntry {
+                source_path: left.join("a.txt").to_string_lossy().to_string(),
+                target_path: right.join("a.txt").to_string_lossy().to_string(),
+                relative_path: "a.txt".to_string(),
+                before_hash: GitHistoryManager::calculate_hash(&right.join("a.txt")).unwrap(),
+            },
+            SyncFolderEntry {
+                source_path: left
+                    .join("nested")
+                    .join("b.txt")
+                    .to_string_lossy()
+                    .to_string(),
+                target_path: right
+                    .join("nested")
+                    .join("b.txt")
+                    .to_string_lossy()
+                    .to_string(),
+                relative_path: "nested/b.txt".to_string(),
+                before_hash: "".to_string(),
+            },
+        ];
+
+        let history = manager
+            .save_folder_sync_snapshot(
+                "session",
+                "bulk",
+                "leftToRight",
+                &left.to_string_lossy(),
+                &right.to_string_lossy(),
+                &entries,
+            )
+            .unwrap();
+
+        manager.restore_sync(&history.id).unwrap();
+
+        assert_eq!(fs::read_to_string(right.join("a.txt")).unwrap(), "old a");
+        assert!(!right.join("nested").join("b.txt").exists());
+        assert_eq!(
+            fs::read_to_string(right.join("extra.txt")).unwrap(),
+            "keep me"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 impl GitHistoryManager {
@@ -19,8 +200,13 @@ impl GitHistoryManager {
             .app_local_data_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
             .join("history_git");
-        
+
         Self { git_dir: local_dir }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_testing(git_dir: PathBuf) -> Self {
+        Self { git_dir }
     }
 
     /// Gitリポジトリとデータフォルダの初期化
@@ -45,10 +231,14 @@ impl GitHistoryManager {
             self.run_git(&["init"])?;
             self.run_git(&["config", "user.name", "diff-app"])?;
             self.run_git(&["config", "user.email", "diff-app@local"])?;
-            
+
             // 初期コミットを作成
             self.run_git(&["add", "history.json"])?;
-            self.run_git(&["commit", "-m", "Initial commit (diff-app history initialized)"])?;
+            self.run_git(&[
+                "commit",
+                "-m",
+                "Initial commit (diff-app history initialized)",
+            ])?;
         }
 
         Ok(())
@@ -75,7 +265,11 @@ impl GitHistoryManager {
                     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
                 } else {
                     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                    Err(format!("Git error: {}. Output: {}", err, String::from_utf8_lossy(&out.stdout).trim()))
+                    Err(format!(
+                        "Git error: {}. Output: {}",
+                        err,
+                        String::from_utf8_lossy(&out.stdout).trim()
+                    ))
                 }
             }
             Err(e) => Err(format!("Failed to execute git process: {}", e)),
@@ -90,7 +284,8 @@ impl GitHistoryManager {
         }
 
         let content = fs::read_to_string(&history_json).map_err(|e| e.to_string())?;
-        let histories: Vec<SyncHistory> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        let histories: Vec<SyncHistory> =
+            serde_json::from_str(&content).map_err(|e| e.to_string())?;
         Ok(histories)
     }
 
@@ -118,6 +313,90 @@ impl GitHistoryManager {
                 break;
             }
             hasher.update(&buffer[..count]);
+        }
+
+        Ok(hex::encode(hasher.finalize()))
+    }
+
+    fn snapshot_path(base_dir: &Path, relative_path: &str) -> Result<PathBuf, String> {
+        let normalized = relative_path.replace('\\', "/");
+        let rel = Path::new(&normalized);
+
+        if rel.is_absolute()
+            || rel.components().any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::Prefix(_) | Component::RootDir
+                )
+            })
+        {
+            return Err(format!(
+                "Invalid relative path for folder sync: {}",
+                relative_path
+            ));
+        }
+
+        Ok(base_dir.join(rel))
+    }
+
+    fn list_files_recursive(root: &Path) -> Result<Vec<PathBuf>, String> {
+        let mut files = Vec::new();
+        if !root.exists() {
+            return Ok(files);
+        }
+
+        for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(Self::list_files_recursive(&path)?);
+            } else if path.is_file() {
+                files.push(path);
+            }
+        }
+
+        Ok(files)
+    }
+
+    fn calculate_snapshot_tree_hash(root: &Path) -> Result<String, String> {
+        let mut files = Self::list_files_recursive(root)?;
+        files.sort();
+
+        let mut hasher = Sha256::new();
+        for file in files {
+            let rel = file
+                .strip_prefix(root)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            hasher.update(rel.as_bytes());
+            hasher.update([0]);
+            hasher.update(Self::calculate_hash(&file)?.as_bytes());
+            hasher.update([0]);
+        }
+
+        Ok(hex::encode(hasher.finalize()))
+    }
+
+    fn calculate_targets_hash(target_root: &Path, snapshot_root: &Path) -> Result<String, String> {
+        let mut files = Self::list_files_recursive(snapshot_root)?;
+        files.sort();
+
+        let mut hasher = Sha256::new();
+        for snapshot_file in files {
+            let rel = snapshot_file
+                .strip_prefix(snapshot_root)
+                .map_err(|e| e.to_string())?;
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let target_file = target_root.join(rel);
+            hasher.update(rel_str.as_bytes());
+            hasher.update([0]);
+            if target_file.exists() {
+                hasher.update(Self::calculate_hash(&target_file)?.as_bytes());
+            } else {
+                hasher.update(b"<missing>");
+            }
+            hasher.update([0]);
         }
 
         Ok(hex::encode(hasher.finalize()))
@@ -151,7 +430,7 @@ impl GitHistoryManager {
         // 同期レコードのID生成
         let sync_id = Uuid::new_v4().to_string();
         let snapshot_sync_dir = self.git_dir.join("snapshots").join(&sync_id);
-        
+
         let before_dir = snapshot_sync_dir.join("before");
         let after_dir = snapshot_sync_dir.join("after");
 
@@ -159,7 +438,9 @@ impl GitHistoryManager {
         fs::create_dir_all(&after_dir).map_err(|e| e.to_string())?;
 
         // 1. 同期前のターゲットファイルが存在する場合、スナップショット保存 (before)
-        let file_name = tgt_p.file_name().unwrap_or_else(|| src_p.file_name().unwrap());
+        let file_name = tgt_p
+            .file_name()
+            .unwrap_or_else(|| src_p.file_name().unwrap());
         let before_file_path = before_dir.join(file_name);
         let before_hash = if tgt_p.exists() {
             fs::copy(tgt_p, &before_file_path).map_err(|e| e.to_string())?;
@@ -175,7 +456,7 @@ impl GitHistoryManager {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
         }
-        
+
         // 元ファイルをコピーして同期を実行
         if src_p.exists() {
             fs::copy(src_p, tgt_p).map_err(|e| e.to_string())?;
@@ -211,7 +492,7 @@ impl GitHistoryManager {
 
         // 6. Gitコミット
         self.run_git(&["add", "."])?;
-        
+
         let commit_msg = format!(
             "sync: apply diff\n\nMode: {}\nSync type: {}\nDirection: {}\nSource: {}\nTarget: {}\nTimestamp: {}",
             mode, sync_type, direction, source_path, target_path, Utc::now().to_rfc3339()
@@ -236,6 +517,125 @@ impl GitHistoryManager {
         Ok(history)
     }
 
+    /// フォルダ同期のスナップショット保存と同期実行、Gitコミット
+    pub fn save_folder_sync_snapshot(
+        &self,
+        session_id: &str,
+        mode: &str,
+        direction: &str,
+        source_path: &str,
+        target_path: &str,
+        entries: &[SyncFolderEntry],
+    ) -> Result<SyncHistory, String> {
+        if entries.is_empty() {
+            return Err("No files are eligible for folder sync.".to_string());
+        }
+
+        for entry in entries {
+            let src_p = Path::new(&entry.source_path);
+            let tgt_p = Path::new(&entry.target_path);
+
+            if !src_p.exists() || !src_p.is_file() {
+                return Err(format!("Source file does not exist: {}", entry.source_path));
+            }
+
+            if tgt_p.exists() {
+                let current_hash = Self::calculate_hash(tgt_p)?;
+                if !entry.before_hash.is_empty() && current_hash != entry.before_hash {
+                    return Err(format!(
+                        "External change detected: The target file has been modified externally since last comparison. Please re-compare first. Target: {}",
+                        entry.target_path
+                    ));
+                }
+            } else if !entry.before_hash.is_empty() {
+                return Err(format!(
+                    "External change detected: The target file was expected to exist but is missing. Please re-compare first. Target: {}",
+                    entry.target_path
+                ));
+            }
+        }
+
+        let sync_id = Uuid::new_v4().to_string();
+        let snapshot_sync_dir = self.git_dir.join("snapshots").join(&sync_id);
+        let before_dir = snapshot_sync_dir.join("before");
+        let after_dir = snapshot_sync_dir.join("after");
+
+        fs::create_dir_all(&before_dir).map_err(|e| e.to_string())?;
+        fs::create_dir_all(&after_dir).map_err(|e| e.to_string())?;
+
+        for entry in entries {
+            let src_p = Path::new(&entry.source_path);
+            let tgt_p = Path::new(&entry.target_path);
+            let before_file_path = Self::snapshot_path(&before_dir, &entry.relative_path)?;
+            let after_file_path = Self::snapshot_path(&after_dir, &entry.relative_path)?;
+
+            if tgt_p.exists() {
+                if let Some(parent) = before_file_path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                fs::copy(tgt_p, &before_file_path).map_err(|e| e.to_string())?;
+            }
+
+            if let Some(parent) = tgt_p.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::copy(src_p, tgt_p).map_err(|e| e.to_string())?;
+
+            if let Some(parent) = after_file_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::copy(tgt_p, &after_file_path).map_err(|e| e.to_string())?;
+        }
+
+        let before_hash = Self::calculate_snapshot_tree_hash(&before_dir)?;
+        let after_hash = Self::calculate_snapshot_tree_hash(&after_dir)?;
+
+        let mut history = SyncHistory {
+            id: sync_id.clone(),
+            session_id: session_id.to_string(),
+            mode: mode.to_string(),
+            sync_type: "folder".to_string(),
+            direction: direction.to_string(),
+            source_path: source_path.to_string(),
+            target_path: target_path.to_string(),
+            before_hash,
+            after_hash,
+            commit_id: "".to_string(),
+            created_at: Utc::now(),
+            status: "success".to_string(),
+        };
+
+        let mut histories = self.get_histories()?;
+        histories.push(history.clone());
+        self.save_histories(&histories)?;
+
+        self.run_git(&["add", "."])?;
+        let commit_msg = format!(
+            "sync: apply folder diff\n\nMode: {}\nSync type: folder\nDirection: {}\nSource: {}\nTarget: {}\nFiles: {}\nTimestamp: {}",
+            mode,
+            direction,
+            source_path,
+            target_path,
+            entries.len(),
+            Utc::now().to_rfc3339()
+        );
+        self.run_git(&["commit", "-m", &commit_msg])?;
+
+        let commit_hash = self.run_git(&["rev-parse", "HEAD"])?;
+        history.commit_id = commit_hash.clone();
+
+        let mut histories = self.get_histories()?;
+        if let Some(h) = histories.iter_mut().find(|x| x.id == sync_id) {
+            h.commit_id = commit_hash.clone();
+        }
+        self.save_histories(&histories)?;
+
+        self.run_git(&["add", "history.json"])?;
+        self.run_git(&["commit", "--amend", "--no-edit"])?;
+
+        Ok(history)
+    }
+
     /// 同期の取り消し（復元）
     pub fn restore_sync(&self, history_id: &str) -> Result<SyncHistory, String> {
         let histories = self.get_histories()?;
@@ -246,6 +646,10 @@ impl GitHistoryManager {
 
         if target_history.status == "restored" {
             return Err("This sync operation has already been restored.".to_string());
+        }
+
+        if target_history.sync_type == "folder" {
+            return self.restore_folder_sync(target_history);
         }
 
         let tgt_p = Path::new(&target_history.target_path);
@@ -290,11 +694,16 @@ impl GitHistoryManager {
 
         // 復元前のファイル（＝同期後ファイル）を before にコピー
         if before_file_path.exists() {
-            fs::copy(&before_file_path, restore_snapshot_dir.join("after").join(file_name)).map_err(|e| e.to_string())?;
+            fs::copy(
+                &before_file_path,
+                restore_snapshot_dir.join("after").join(file_name),
+            )
+            .map_err(|e| e.to_string())?;
         }
         // 復元後のファイル（＝同期前ファイル）を after にコピー
         if tgt_p.exists() {
-            fs::copy(tgt_p, restore_snapshot_dir.join("before").join(file_name)).map_err(|e| e.to_string())?;
+            fs::copy(tgt_p, restore_snapshot_dir.join("before").join(file_name))
+                .map_err(|e| e.to_string())?;
         }
 
         let mut restore_history = SyncHistory {
@@ -330,7 +739,9 @@ impl GitHistoryManager {
         self.run_git(&["add", "."])?;
         let commit_msg = format!(
             "restore: revert sync operation {}\n\nTarget: {}\nTimestamp: {}",
-            history_id, target_history.target_path, Utc::now().to_rfc3339()
+            history_id,
+            target_history.target_path,
+            Utc::now().to_rfc3339()
         );
         self.run_git(&["commit", "-m", &commit_msg])?;
 
@@ -346,6 +757,123 @@ impl GitHistoryManager {
         self.save_histories(&histories)?;
 
         // アメンドコミットで history.json を反映
+        self.run_git(&["add", "history.json"])?;
+        self.run_git(&["commit", "--amend", "--no-edit"])?;
+
+        Ok(restore_history)
+    }
+
+    fn restore_folder_sync(&self, target_history: &SyncHistory) -> Result<SyncHistory, String> {
+        if target_history.status == "restored" {
+            return Err("This sync operation has already been restored.".to_string());
+        }
+
+        let tgt_root = Path::new(&target_history.target_path);
+        let snapshot_sync_dir = self.git_dir.join("snapshots").join(&target_history.id);
+        let before_dir = snapshot_sync_dir.join("before");
+        let after_dir = snapshot_sync_dir.join("after");
+
+        if !after_dir.exists() {
+            return Err("Snapshot folder not found in history repository.".to_string());
+        }
+
+        let current_after_hash = Self::calculate_targets_hash(tgt_root, &after_dir)?;
+        if current_after_hash != target_history.after_hash {
+            return Err("External change detected: One or more files have been modified since this folder sync operation. Restoration is blocked for safety.".to_string());
+        }
+
+        let after_files = Self::list_files_recursive(&after_dir)?;
+        for after_file in &after_files {
+            let rel = after_file
+                .strip_prefix(&after_dir)
+                .map_err(|e| e.to_string())?;
+            let before_file = before_dir.join(rel);
+            let target_file = tgt_root.join(rel);
+
+            if before_file.exists() {
+                if let Some(parent) = target_file.parent() {
+                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                fs::copy(&before_file, &target_file).map_err(|e| e.to_string())?;
+            } else if target_file.exists() {
+                fs::remove_file(&target_file).map_err(|e| e.to_string())?;
+            }
+        }
+
+        let restore_sync_id = Uuid::new_v4().to_string();
+        let restore_snapshot_dir = self.git_dir.join("snapshots").join(&restore_sync_id);
+        fs::create_dir_all(restore_snapshot_dir.join("before")).map_err(|e| e.to_string())?;
+        fs::create_dir_all(restore_snapshot_dir.join("after")).map_err(|e| e.to_string())?;
+
+        for after_file in &after_files {
+            let rel = after_file
+                .strip_prefix(&after_dir)
+                .map_err(|e| e.to_string())?;
+            let restore_before_file = restore_snapshot_dir.join("before").join(rel);
+            if let Some(parent) = restore_before_file.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::copy(after_file, restore_before_file).map_err(|e| e.to_string())?;
+
+            let target_file = tgt_root.join(rel);
+            if target_file.exists() {
+                let restore_after_file = restore_snapshot_dir.join("after").join(rel);
+                if let Some(parent) = restore_after_file.parent() {
+                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                fs::copy(target_file, restore_after_file).map_err(|e| e.to_string())?;
+            }
+        }
+
+        let restore_before_hash =
+            Self::calculate_snapshot_tree_hash(&restore_snapshot_dir.join("before"))?;
+        let restore_after_hash =
+            Self::calculate_snapshot_tree_hash(&restore_snapshot_dir.join("after"))?;
+
+        let mut restore_history = SyncHistory {
+            id: restore_sync_id.clone(),
+            session_id: target_history.session_id.clone(),
+            mode: target_history.mode.clone(),
+            sync_type: target_history.sync_type.clone(),
+            direction: if target_history.direction == "leftToRight" {
+                "rightToLeft".to_string()
+            } else {
+                "leftToRight".to_string()
+            },
+            source_path: target_history.target_path.clone(),
+            target_path: target_history.target_path.clone(),
+            before_hash: restore_before_hash,
+            after_hash: restore_after_hash,
+            commit_id: "".to_string(),
+            created_at: Utc::now(),
+            status: "restored".to_string(),
+        };
+
+        let mut histories = self.get_histories()?;
+        if let Some(h) = histories.iter_mut().find(|x| x.id == target_history.id) {
+            h.status = "restored".to_string();
+        }
+        histories.push(restore_history.clone());
+        self.save_histories(&histories)?;
+
+        self.run_git(&["add", "."])?;
+        let commit_msg = format!(
+            "restore: revert folder sync operation {}\n\nTarget: {}\nTimestamp: {}",
+            target_history.id,
+            target_history.target_path,
+            Utc::now().to_rfc3339()
+        );
+        self.run_git(&["commit", "-m", &commit_msg])?;
+
+        let commit_hash = self.run_git(&["rev-parse", "HEAD"])?;
+        restore_history.commit_id = commit_hash.clone();
+
+        let mut histories = self.get_histories()?;
+        if let Some(h) = histories.iter_mut().find(|x| x.id == restore_sync_id) {
+            h.commit_id = commit_hash.clone();
+        }
+        self.save_histories(&histories)?;
+
         self.run_git(&["add", "history.json"])?;
         self.run_git(&["commit", "--amend", "--no-edit"])?;
 

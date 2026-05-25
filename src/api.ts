@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { CompareSession, DiffOptions, FileDiffDetail, SyncHistory } from "./types";
+import { CompareSession, DiffOptions, FileDiffDetail, SyncFolderEntry, SyncHistory } from "./types";
 
 export async function selectDirectory(): Promise<string | null> {
   return invoke<string | null>("select_directory");
@@ -45,6 +45,24 @@ export async function syncFile(
   });
 }
 
+export async function syncFolder(
+  sessionId: string,
+  mode: 'bulk' | 'specified',
+  direction: 'leftToRight' | 'rightToLeft',
+  sourcePath: string,
+  targetPath: string,
+  entries: SyncFolderEntry[]
+): Promise<SyncHistory> {
+  return invoke<SyncHistory>("sync_folder", {
+    sessionId,
+    mode,
+    direction,
+    sourcePath,
+    targetPath,
+    entries,
+  });
+}
+
 export async function getSyncHistories(): Promise<SyncHistory[]> {
   return invoke<SyncHistory[]>("get_sync_histories");
 }
@@ -56,4 +74,3 @@ export async function restoreSync(historyId: string): Promise<SyncHistory> {
 export async function cancelCompare(): Promise<void> {
   return invoke<void>("cancel_compare");
 }
-

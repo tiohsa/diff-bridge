@@ -10,7 +10,7 @@ pub struct CompareSession {
     pub right_root: Option<String>,
     pub left_file: Option<String>,
     pub right_file: Option<String>,
-    pub left_path_type: Option<String>,  // "windows" | "unc" | "wsl2"
+    pub left_path_type: Option<String>, // "windows" | "unc" | "wsl2"
     pub right_path_type: Option<String>, // "windows" | "unc" | "wsl2"
     pub created_at: DateTime<Utc>,
     pub options: DiffOptions,
@@ -68,6 +68,15 @@ pub struct SyncHistory {
     pub commit_id: String,
     pub created_at: DateTime<Utc>,
     pub status: String, // "success" | "failed" | "restored"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncFolderEntry {
+    pub source_path: String,
+    pub target_path: String,
+    pub relative_path: String,
+    pub before_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

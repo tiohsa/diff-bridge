@@ -1,7 +1,7 @@
-mod models;
-mod git_history;
-mod diff_engine;
 mod commands;
+mod diff_engine;
+mod git_history;
+mod models;
 
 use git_history::GitHistoryManager;
 use std::sync::atomic::AtomicBool;
@@ -36,6 +36,7 @@ pub fn run() {
             commands::compare_directories,
             commands::compare_files,
             commands::sync_file,
+            commands::sync_folder,
             commands::get_sync_histories,
             commands::restore_sync,
             commands::cancel_compare
@@ -43,4 +44,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-

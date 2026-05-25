@@ -1497,3 +1497,164 @@ h1, h2, h3, h4 {
 .modal-history-detail .modal-body {
   padding: 1.5rem;
 }
+
+/* ==========================================================================
+   Premium Editorial Additions (DESIGN.md)
+   ========================================================================== */
+
+/* Anthropic Radial-Spike Mark Icon Style */
+.radial-spike {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-primary);
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+/* Base title decor */
+.title-with-spike {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+/* Home hero spacing */
+.home-hero {
+  text-align: center;
+  padding: 1rem 0 2rem 0;
+}
+
+.home-hero h1 {
+  font-size: 2.8rem;
+  letter-spacing: -0.03em;
+  margin-bottom: 0.8rem;
+  font-family: var(--font-heading);
+  font-weight: 400;
+  color: var(--color-ink);
+}
+
+.home-hero p {
+  font-family: var(--font-sans);
+  font-size: 1.1rem;
+  color: var(--color-muted);
+  max-width: 600px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* Setup Card for Input Sections (Alternative to huge glass-panel) */
+.setup-card {
+  background-color: var(--color-surface-card);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  padding: 2rem;
+  margin-bottom: 2rem;
+  box-shadow: none;
+}
+
+.setup-card-title {
+  font-family: var(--font-heading);
+  font-size: 1.4rem;
+  margin-bottom: 1.25rem;
+  color: var(--color-ink);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+}
+
+/* Showcase Dark Product Card (Cream-to-Dark rhythm) */
+.product-mockup-card-dark {
+  background-color: var(--color-surface-dark);
+  border: 1px solid #2d2c29;
+  border-radius: var(--radius-lg);
+  padding: 2.5rem;
+  color: var(--color-on-dark);
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.product-mockup-card-dark h3 {
+  font-family: var(--font-heading);
+  font-size: 1.5rem;
+  color: var(--color-on-dark);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.product-mockup-card-dark p {
+  color: var(--color-on-dark-soft);
+  font-size: 0.95rem;
+  max-width: 700px;
+  line-height: 1.6;
+}
+
+/* Code Window Card */
+.code-window-card {
+  background-color: var(--color-surface-dark-soft);
+  border: 1px solid #2d2c29;
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: #a7f3d0; /* success text representation */
+  overflow-x: auto;
+  line-height: 1.5;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.2);
+}
+
+.code-window-line {
+  display: flex;
+  gap: 1rem;
+}
+
+.code-window-ln {
+  color: #575550;
+  user-select: none;
+  text-align: right;
+  width: 2rem;
+}
+
+.code-window-text {
+  color: var(--color-on-dark-soft);
+}
+
+.code-window-text.highlight-green {
+  color: #5db872;
+}
+
+.code-window-text.highlight-coral {
+  color: var(--color-primary);
+}
+
+.code-window-text.highlight-teal {
+  color: var(--color-accent-teal);
+}
+
+/* Scrollbar Customization for Dark Surfaces */
+.tree-pane::-webkit-scrollbar,
+.pane::-webkit-scrollbar,
+.code-window-card::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.tree-pane::-webkit-scrollbar-thumb,
+.pane::-webkit-scrollbar-thumb,
+.code-window-card::-webkit-scrollbar-thumb {
+  background: #3e3c38;
+  border-radius: var(--radius-pill);
+}
+
+.tree-pane::-webkit-scrollbar-thumb:hover,
+.pane::-webkit-scrollbar-thumb:hover,
+.code-window-card::-webkit-scrollbar-thumb:hover {
+  background: #575550;
+}
+
