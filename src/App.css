@@ -286,6 +286,14 @@ h1, h2, h3, h4 {
   border-color: var(--color-muted-soft);
 }
 
+.btn-secondary:disabled {
+  color: var(--color-muted-soft);
+  background-color: var(--color-surface-soft);
+  border-color: var(--color-hairline);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 /* Danger buttons use soft red fills */
 .btn-danger {
   background-color: rgba(198, 69, 69, 0.1);
@@ -1010,6 +1018,21 @@ h1, h2, h3, h4 {
   gap: 0.75rem;
 }
 
+.diff-navigation-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.diff-navigation-count {
+  min-width: 4.5rem;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--color-muted);
+}
+
 /* Two pane split viewer - Product code view over Surface Dark */
 .two-pane-container {
   display: grid;
@@ -1093,6 +1116,14 @@ h1, h2, h3, h4 {
   background-color: var(--diff-insert-bg);
   border-left-color: var(--diff-insert-border);
   color: var(--diff-insert-text);
+}
+
+.code-line.current-diff {
+  box-shadow: inset 0 0 0 1px rgba(232, 165, 90, 0.45);
+}
+
+.code-line.current-diff .line-number {
+  color: var(--color-accent-amber);
 }
 
 .code-line.empty-stub {
@@ -1657,4 +1688,3 @@ h1, h2, h3, h4 {
 .code-window-card::-webkit-scrollbar-thumb:hover {
   background: #575550;
 }
-

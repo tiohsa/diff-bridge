@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   selectDirectory,
   selectFile,
@@ -237,6 +237,7 @@ export default function App() {
   // Detailed Diff State
   const [activeFileResult, setActiveFileResult] = useState<DiffFileResult | null>(null);
   const [activeDiffDetail, setActiveDiffDetail] = useState<FileDiffDetail | null>(null);
+  const [currentDiffHunkIndex, setCurrentDiffHunkIndex] = useState<number>(-1);
 
 
   // Sync Confirmation Dialog State
@@ -357,6 +358,58 @@ export default function App() {
       leftPaneRef.current.scrollLeft = rightPaneRef.current.scrollLeft;
     }
     setTimeout(() => { isScrollingRight.current = false; }, 50);
+  };
+
+  const diffHunks = useMemo(() => {
+    if (!activeDiffDetail) return [];
+
+    const hunks: { startIndex: number; endIndex: number }[] = [];
+    activeDiffDetail.lines.forEach((line, index) => {
+      if (line.tag === "equal") return;
+
+      const lastHunk = hunks[hunks.length - 1];
+      if (lastHunk && index === lastHunk.endIndex + 1) {
+        lastHunk.endIndex = index;
+        return;
+      }
+
+      hunks.push({ startIndex: index, endIndex: index });
+    });
+
+    return hunks;
+  }, [activeDiffDetail]);
+
+  useEffect(() => {
+    setCurrentDiffHunkIndex(-1);
+  }, [activeDiffDetail]);
+
+  const scrollToDiffHunk = (hunkIndex: number) => {
+    const hunk = diffHunks[hunkIndex];
+    if (!hunk || !leftPaneRef.current || !rightPaneRef.current) return;
+
+    const target = leftPaneRef.current.querySelector<HTMLElement>(
+      `[data-diff-row-index="${hunk.startIndex}"]`
+    );
+    if (!target) return;
+
+    const nextScrollTop = Math.max(0, target.offsetTop - leftPaneRef.current.clientHeight * 0.25);
+    leftPaneRef.current.scrollTop = nextScrollTop;
+    rightPaneRef.current.scrollTop = nextScrollTop;
+    setCurrentDiffHunkIndex(hunkIndex);
+  };
+
+  const handleJumpDiff = (direction: 'previous' | 'next') => {
+    if (diffHunks.length === 0) return;
+
+    const fallbackIndex = direction === "next" ? 0 : diffHunks.length - 1;
+    const nextIndex = currentDiffHunkIndex === -1
+      ? fallbackIndex
+      : Math.min(
+          diffHunks.length - 1,
+          Math.max(0, currentDiffHunkIndex + (direction === "next" ? 1 : -1))
+        );
+
+    scrollToDiffHunk(nextIndex);
   };
 
   // Choose Path Handlers
@@ -1596,12 +1649,35 @@ export default function App() {
                     )}
                   </div>
 
-                  <button className="btn btn-secondary" onClick={() => {
-                    setActiveFileResult(null);
-                    setActiveDiffDetail(null);
-                  }}>
-                    閉じる
-                  </button>
+                  <div className="diff-navigation-controls">
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => handleJumpDiff("previous")}
+                      disabled={diffHunks.length === 0 || currentDiffHunkIndex === 0}
+                      title="前の差分へ移動"
+                    >
+                      ↑ 前の差分
+                    </button>
+                    <span className="diff-navigation-count">
+                      {diffHunks.length === 0
+                        ? "差分なし"
+                        : `${currentDiffHunkIndex === -1 ? "-" : currentDiffHunkIndex + 1} / ${diffHunks.length}`}
+                    </span>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => handleJumpDiff("next")}
+                      disabled={diffHunks.length === 0 || currentDiffHunkIndex === diffHunks.length - 1}
+                      title="次の差分へ移動"
+                    >
+                      ↓ 次の差分
+                    </button>
+                    <button className="btn btn-secondary" onClick={() => {
+                      setActiveFileResult(null);
+                      setActiveDiffDetail(null);
+                    }}>
+                      閉じる
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1615,9 +1691,11 @@ export default function App() {
                   </div>
                   <div className="pane-code-area">
                     {activeDiffDetail.lines.map((line, idx) => {
+                      const currentHunk = diffHunks[currentDiffHunkIndex];
+                      const isCurrentDiff = !!currentHunk && idx >= currentHunk.startIndex && idx <= currentHunk.endIndex;
                       const isRightOnly = line.leftLineNo === null;
                       if (isRightOnly) {
-                        return <div key={idx} className="code-line empty-stub"><div className="line-number">-</div><div className="line-content"></div></div>;
+                        return <div key={idx} data-diff-row-index={idx} className={`code-line empty-stub ${isCurrentDiff ? "current-diff" : ""}`}><div className="line-number">-</div><div className="line-content"></div></div>;
                       }
 
                       // CSS クラス判定
@@ -1625,7 +1703,7 @@ export default function App() {
                       if (line.tag === "delete" || line.tag === "modify-delete") lineClass = "delete";
 
                       return (
-                        <div key={idx} className={`code-line ${lineClass}`}>
+                        <div key={idx} data-diff-row-index={idx} className={`code-line ${lineClass} ${isCurrentDiff ? "current-diff" : ""}`}>
                           <div className="line-number">{line.leftLineNo}</div>
                           <div className="line-content">{renderLineContentWithInline(line)}</div>
                         </div>
@@ -1642,16 +1720,18 @@ export default function App() {
                   </div>
                   <div className="pane-code-area">
                     {activeDiffDetail.lines.map((line, idx) => {
+                      const currentHunk = diffHunks[currentDiffHunkIndex];
+                      const isCurrentDiff = !!currentHunk && idx >= currentHunk.startIndex && idx <= currentHunk.endIndex;
                       const isLeftOnly = line.rightLineNo === null;
                       if (isLeftOnly) {
-                        return <div key={idx} className="code-line empty-stub"><div className="line-number">-</div><div className="line-content"></div></div>;
+                        return <div key={idx} data-diff-row-index={idx} className={`code-line empty-stub ${isCurrentDiff ? "current-diff" : ""}`}><div className="line-number">-</div><div className="line-content"></div></div>;
                       }
 
                       let lineClass = "equal";
                       if (line.tag === "insert" || line.tag === "modify-insert") lineClass = "insert";
 
                       return (
-                        <div key={idx} className={`code-line ${lineClass}`}>
+                        <div key={idx} data-diff-row-index={idx} className={`code-line ${lineClass} ${isCurrentDiff ? "current-diff" : ""}`}>
                           <div className="line-number">{line.rightLineNo}</div>
                           <div className="line-content">{renderLineContentWithInline(line)}</div>
                         </div>
